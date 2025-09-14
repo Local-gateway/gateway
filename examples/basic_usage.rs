@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         heartbeat_interval: 30, // 30秒心跳一次
         connection_timeout: 180, // 3分钟连接超时
         registry_cleanup_interval: 60, // 1分钟清理一次注册表
+        ..Default::default() // 使用其他默认配置
     };
 
     // 创建网关实例

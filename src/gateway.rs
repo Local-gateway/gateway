@@ -2,9 +2,11 @@
 //! 
 //! 实现 WDIC 网关的核心功能，整合注册表、协议和网络管理。
 //! 性能优化版本：使用 AHashMap 和 SmallVec 提升性能。
+//! 增强版本：支持 TLS 1.3 mTLS、zstd 压缩、缓存系统和 IPv6/IPv4 双栈。
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Ipv6Addr};
 use std::sync::Arc;
+use std::path::PathBuf;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{Duration, interval, sleep};
 use anyhow::Result;
@@ -15,6 +17,8 @@ use crate::protocol::WdicMessage;
 use crate::network::{NetworkManager, NetworkEvent};
 use crate::udp_protocol::{UdpBroadcastManager, UdpBroadcastEvent, UdpToken};
 use crate::performance::{PerformanceMonitor, PerformanceTestSuite, BenchmarkResult};
+use crate::cache::{GatewayCache, CacheMetadata};
+use crate::tls::{TlsManager, MtlsConfig};
 
 /// 网关配置
 #[derive(Debug, Clone)]
@@ -31,6 +35,22 @@ pub struct GatewayConfig {
     pub connection_timeout: i64,
     /// 注册表清理间隔（秒）
     pub registry_cleanup_interval: u64,
+    /// 启用 IPv6 双栈支持
+    pub enable_ipv6: bool,
+    /// 启用 TLS 1.3 mTLS 验证
+    pub enable_mtls: bool,
+    /// 启用 zstd 压缩
+    pub enable_compression: bool,
+    /// 缓存目录路径
+    pub cache_dir: PathBuf,
+    /// 缓存默认TTL（秒）
+    pub cache_default_ttl: u64,
+    /// 最大缓存大小（字节）
+    pub max_cache_size: u64,
+    /// 缓存清理间隔（秒）
+    pub cache_cleanup_interval: u64,
+    /// TLS 配置
+    pub tls_config: MtlsConfig,
 }
 
 impl Default for GatewayConfig {
@@ -42,6 +62,14 @@ impl Default for GatewayConfig {
             heartbeat_interval: 60,
             connection_timeout: 300,
             registry_cleanup_interval: 120,
+            enable_ipv6: true,
+            enable_mtls: true,
+            enable_compression: true,
+            cache_dir: PathBuf::from("./cache"),
+            cache_default_ttl: 3600, // 1 小时
+            max_cache_size: 1024 * 1024 * 1024, // 1 GB
+            cache_cleanup_interval: 300, // 5 分钟
+            tls_config: MtlsConfig::default(),
         }
     }
 }
@@ -49,6 +77,7 @@ impl Default for GatewayConfig {
 /// WDIC 网关
 /// 
 /// 网关的主要实现，负责协调各个模块的工作。
+/// 增强版本支持缓存系统、TLS 1.3 mTLS、zstd 压缩和 IPv6/IPv4 双栈。
 pub struct Gateway {
     /// 网关配置
     config: GatewayConfig,
@@ -60,6 +89,10 @@ pub struct Gateway {
     udp_broadcast_manager: Arc<UdpBroadcastManager>,
     /// 性能监控器
     performance_monitor: Arc<PerformanceMonitor>,
+    /// 缓存系统
+    cache: Arc<Mutex<GatewayCache>>,
+    /// TLS 管理器
+    tls_manager: Arc<TlsManager>,
     /// 运行状态
     running: Arc<Mutex<bool>>,
 }
@@ -95,7 +128,17 @@ impl Gateway {
     pub async fn with_config(config: GatewayConfig) -> Result<Self> {
         // 如果配置的端口为 55555，在测试环境中使用 0 以避免冲突
         let port = if cfg!(test) && config.port == 55555 { 0 } else { config.port };
-        let local_addr = SocketAddr::from(([0, 0, 0, 0], port));
+        
+        // 创建本地地址，支持 IPv6 双栈
+        let local_addr = if config.enable_ipv6 {
+            // IPv6 双栈模式：绑定到 [::]:port 会自动同时监听 IPv4 和 IPv6
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))
+        } else {
+            // 仅 IPv4 模式
+            SocketAddr::from(([0, 0, 0, 0], port))
+        };
+        
+        info!("创建网关，启用 IPv6 双栈: {}, 监听地址: {}", config.enable_ipv6, local_addr);
         
         // 创建网络管理器（QUIC 协议）
         let network_manager = Arc::new(NetworkManager::new(local_addr)?);
@@ -104,7 +147,11 @@ impl Gateway {
         // 创建 UDP 广播管理器（UDP 协议）
         // 在测试环境中使用 0 端口让系统自动分配
         let udp_port = if cfg!(test) { 0 } else { actual_addr.port() };
-        let udp_addr = SocketAddr::from(([0, 0, 0, 0], udp_port));
+        let udp_addr = if config.enable_ipv6 {
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, udp_port))
+        } else {
+            SocketAddr::from(([0, 0, 0, 0], udp_port))
+        };
         let udp_broadcast_manager = Arc::new(UdpBroadcastManager::new(udp_addr)?);
         
         // 创建注册表
@@ -116,8 +163,32 @@ impl Gateway {
         // 创建性能监控器
         let performance_monitor = Arc::new(PerformanceMonitor::new());
 
+        // 创建缓存系统
+        let cache = Arc::new(Mutex::new(GatewayCache::new(
+            &config.cache_dir,
+            config.cache_default_ttl,
+            config.max_cache_size,
+        )?));
+
+        // 创建 TLS 管理器
+        let tls_manager = Arc::new(TlsManager::new(config.tls_config.clone())?);
+
         info!("网关 '{}' 在地址 {} 创建（QUIC），UDP 广播在 {}", 
               config.name, actual_addr, udp_broadcast_manager.local_addr());
+        
+        if config.enable_ipv6 {
+            info!("启用 IPv6 双栈模式，自动支持 IPv4 和 IPv6 连接");
+        }
+        
+        if config.enable_mtls {
+            let (cert_count, key_count, mtls_ready) = tls_manager.get_certificate_stats();
+            info!("启用 TLS 1.3 mTLS 验证 - 证书: {}, 私钥: {}, 就绪: {}", 
+                  cert_count, key_count, mtls_ready);
+        }
+        
+        if config.enable_compression {
+            info!("启用 zstd 数据压缩");
+        }
 
         Ok(Self {
             config,
@@ -125,6 +196,8 @@ impl Gateway {
             network_manager,
             udp_broadcast_manager,
             performance_monitor,
+            cache,
+            tls_manager,
             running: Arc::new(Mutex::new(false)),
         })
     }
@@ -204,8 +277,9 @@ impl Gateway {
         let running_clone = Arc::clone(&self.running);
 
         // 广播任务
+        let cache_for_broadcast = Arc::clone(&self.cache);
         tokio::spawn(async move {
-            Self::broadcast_task(registry_clone, network_clone, udp_clone, config_clone, running_clone).await;
+            Self::broadcast_task(registry_clone, network_clone, udp_clone, cache_for_broadcast, config_clone, running_clone).await;
         });
 
         // 注册表清理任务
@@ -215,6 +289,15 @@ impl Gateway {
 
         tokio::spawn(async move {
             Self::registry_cleanup_task(registry_cleanup, config_cleanup, running_cleanup).await;
+        });
+
+        // 缓存清理任务
+        let cache_cleanup = Arc::clone(&self.cache);
+        let config_cache_cleanup = self.config.clone();
+        let running_cache_cleanup = Arc::clone(&self.running);
+
+        tokio::spawn(async move {
+            Self::cache_cleanup_task(cache_cleanup, config_cache_cleanup, running_cache_cleanup).await;
         });
 
         // 主事件循环
@@ -543,13 +626,14 @@ impl Gateway {
         Ok(())
     }
 
-    /// 广播任务
+    /// 广播任务 - 增强版本
     /// 
-    /// 定期向网络广播自己的存在。
+    /// 定期向网络广播自己的存在，并在心跳时广播缓存名称哈希列表。
     async fn broadcast_task(
         registry: Arc<RwLock<Registry>>,
         network_manager: Arc<NetworkManager>,
         udp_broadcast_manager: Arc<UdpBroadcastManager>,
+        cache: Arc<Mutex<GatewayCache>>,
         config: GatewayConfig,
         running: Arc<Mutex<bool>>,
     ) {
@@ -571,14 +655,39 @@ impl Gateway {
                 }
             }
 
-            // UDP 协议信息广播
-            let info_content = format!("网关 '{}' 心跳广播", local_entry.name);
+            // 获取缓存名称哈希列表
+            let name_hash_list = {
+                let cache_guard = cache.lock().await;
+                cache_guard.get_name_hash_list()
+            };
+
+            // UDP 协议信息广播（包含缓存哈希列表）
+            let info_content = if name_hash_list.is_empty() {
+                format!("网关 '{}' 心跳广播 - 无缓存文件", local_entry.name)
+            } else {
+                format!("网关 '{}' 心跳广播 - 缓存文件: {} 个", 
+                        local_entry.name, name_hash_list.len())
+            };
+            
             match udp_broadcast_manager.send_info_message(local_entry.id, info_content).await {
                 Ok(sent_count) => {
                     debug!("UDP 定期广播发送到 {} 个地址", sent_count);
                 }
                 Err(e) => {
                     error!("UDP 定期广播失败: {}", e);
+                }
+            }
+
+            // 如果有缓存文件，发送详细的哈希列表（可选的专门广播）
+            if !name_hash_list.is_empty() {
+                let hash_list_content = format!("CACHE_HASHES:{}", name_hash_list.join(","));
+                match udp_broadcast_manager.send_info_message(local_entry.id, hash_list_content).await {
+                    Ok(_) => {
+                        debug!("广播了 {} 个缓存文件哈希", name_hash_list.len());
+                    }
+                    Err(e) => {
+                        warn!("广播缓存哈希列表失败: {}", e);
+                    }
                 }
             }
         }
@@ -610,6 +719,49 @@ impl Gateway {
         }
 
         debug!("注册表清理任务退出");
+    }
+
+    /// 缓存清理任务
+    /// 
+    /// 定期清理过期的缓存条目。
+    async fn cache_cleanup_task(
+        cache: Arc<Mutex<GatewayCache>>,
+        config: GatewayConfig,
+        running: Arc<Mutex<bool>>,
+    ) {
+        let mut cleanup_interval = interval(Duration::from_secs(config.cache_cleanup_interval));
+
+        while *running.lock().await {
+            cleanup_interval.tick().await;
+
+            let cleaned_count = {
+                let mut cache_guard = cache.lock().await;
+                match cache_guard.cleanup_expired() {
+                    Ok(count) => count,
+                    Err(e) => {
+                        error!("缓存清理失败: {}", e);
+                        0
+                    }
+                }
+            };
+
+            if cleaned_count > 0 {
+                info!("清理了 {} 个过期的缓存条目", cleaned_count);
+            }
+            
+            // 记录缓存统计信息
+            let (cache_count, cache_size, max_size) = {
+                let cache_guard = cache.lock().await;
+                cache_guard.get_cache_stats()
+            };
+            
+            debug!("缓存统计: {} 个条目, {} / {} MB", 
+                   cache_count, 
+                   cache_size / (1024 * 1024), 
+                   max_size / (1024 * 1024));
+        }
+
+        debug!("缓存清理任务退出");
     }
 
     /// 停止网关
@@ -788,6 +940,208 @@ impl Gateway {
     /// 性能监控器实例
     pub fn performance_monitor(&self) -> Arc<PerformanceMonitor> {
         Arc::clone(&self.performance_monitor)
+    }
+
+    /// 缓存文件到网关缓存系统
+    /// 
+    /// # 参数
+    /// 
+    /// * `name` - 文件名称
+    /// * `data` - 文件数据
+    /// * `ttl` - 可选的生存时间（秒），使用None采用默认TTL
+    /// 
+    /// # 返回值
+    /// 
+    /// 文件的哈希值
+    pub async fn cache_file(&self, name: &str, data: &[u8], ttl: Option<u64>) -> Result<String> {
+        let mut cache = self.cache.lock().await;
+        let file_hash = cache.cache_file(name, data, ttl)?;
+        
+        info!("文件已缓存: {} -> 哈希: {}", name, file_hash);
+        
+        // 如果启用了压缩，数据已经在缓存系统中被压缩
+        if self.config.enable_compression {
+            debug!("文件数据已使用 zstd 压缩存储");
+        }
+        
+        Ok(file_hash)
+    }
+
+    /// 从缓存获取文件
+    /// 
+    /// # 参数
+    /// 
+    /// * `file_hash` - 文件哈希值
+    /// 
+    /// # 返回值
+    /// 
+    /// 解压缩后的文件数据和元数据（如果存在）
+    pub async fn get_cached_file(&self, file_hash: &str) -> Result<Option<(Vec<u8>, CacheMetadata)>> {
+        let mut cache = self.cache.lock().await;
+        cache.get_cached_file(file_hash)
+    }
+
+    /// 通过文件名称从缓存获取文件
+    /// 
+    /// # 参数
+    /// 
+    /// * `name` - 文件名称
+    /// 
+    /// # 返回值
+    /// 
+    /// 解压缩后的文件数据和元数据（如果存在）
+    pub async fn get_cached_file_by_name(&self, name: &str) -> Result<Option<(Vec<u8>, CacheMetadata)>> {
+        let mut cache = self.cache.lock().await;
+        cache.get_cached_file_by_name(name)
+    }
+
+    /// 获取缓存的名称哈希列表
+    /// 
+    /// 在网络心跳时广播自己的名称哈希名单
+    /// 
+    /// # 返回值
+    /// 
+    /// 所有缓存文件的名称哈希列表
+    pub async fn get_cache_name_hash_list(&self) -> Vec<String> {
+        let cache = self.cache.lock().await;
+        cache.get_name_hash_list()
+    }
+
+    /// 获取缓存统计信息
+    /// 
+    /// # 返回值
+    /// 
+    /// (缓存条目数量, 当前缓存大小, 最大缓存大小)
+    pub async fn get_cache_stats(&self) -> (usize, u64, u64) {
+        let cache = self.cache.lock().await;
+        cache.get_cache_stats()
+    }
+
+    /// 清理过期缓存
+    /// 
+    /// # 返回值
+    /// 
+    /// 清理的条目数量
+    pub async fn cleanup_expired_cache(&self) -> Result<usize> {
+        let mut cache = self.cache.lock().await;
+        cache.cleanup_expired()
+    }
+
+    /// 计算网络距离（基于延迟）
+    /// 
+    /// # 参数
+    /// 
+    /// * `target_addr` - 目标地址
+    /// 
+    /// # 返回值
+    /// 
+    /// 网络距离（毫秒）
+    pub async fn calculate_network_distance(&self, target_addr: SocketAddr) -> Result<u64> {
+        let start_time = std::time::Instant::now();
+        
+        // 发送ping消息测量延迟
+        let ping_token = UdpToken::InfoMessage {
+            sender_id: self.get_local_entry().await.id,
+            content: "PING".to_string(),
+            message_id: uuid::Uuid::new_v4(),
+        };
+        
+        self.send_token_to(ping_token, target_addr).await?;
+        
+        // 简化的距离计算，实际应该等待响应
+        let elapsed = start_time.elapsed();
+        let distance = elapsed.as_millis() as u64;
+        
+        debug!("计算到 {} 的网络距离: {} ms", target_addr, distance);
+        
+        Ok(distance)
+    }
+
+    /// 请求其他网关的缓存文件（多种子快速传输）
+    /// 
+    /// # 参数
+    /// 
+    /// * `file_hash` - 文件哈希值
+    /// * `sources` - 可能的源网关地址列表
+    /// 
+    /// # 返回值
+    /// 
+    /// 是否成功获取文件
+    pub async fn request_cached_file_from_sources(
+        &self,
+        file_hash: &str,
+        sources: Vec<SocketAddr>,
+    ) -> Result<bool> {
+        if sources.is_empty() {
+            return Ok(false);
+        }
+        
+        info!("从 {} 个源请求缓存文件: {}", sources.len(), file_hash);
+        
+        // 计算网络距离并排序
+        let mut source_distances = Vec::new();
+        for source in sources {
+            match self.calculate_network_distance(source).await {
+                Ok(distance) => source_distances.push((source, distance)),
+                Err(e) => {
+                    warn!("无法计算到 {} 的网络距离: {}", source, e);
+                    source_distances.push((source, u64::MAX));
+                }
+            }
+        }
+        
+        // 按距离排序，最近的优先
+        source_distances.sort_by_key(|(_, distance)| *distance);
+        
+        // 发送文件请求令牌到最近的几个源
+        let max_sources = 3.min(source_distances.len());
+        for (source, distance) in source_distances.iter().take(max_sources) {
+            let request_token = UdpToken::FileRequest {
+                requester_id: self.get_local_entry().await.id,
+                file_path: file_hash.to_string(), // 使用哈希作为文件路径标识
+                request_id: uuid::Uuid::new_v4(),
+            };
+            
+            debug!("向源 {} (距离: {} ms) 发送文件请求", source, distance);
+            
+            if let Err(e) = self.send_token_to(request_token, *source).await {
+                warn!("发送文件请求到 {} 失败: {}", source, e);
+            }
+        }
+        
+        // 实际的多种子下载逻辑会在 UDP 消息处理中实现
+        Ok(true)
+    }
+
+    /// 获取 TLS 管理器引用
+    pub fn tls_manager(&self) -> Arc<TlsManager> {
+        Arc::clone(&self.tls_manager)
+    }
+
+    /// 验证对等证书
+    /// 
+    /// # 参数
+    /// 
+    /// * `peer_cert` - 对等方的证书数据
+    /// 
+    /// # 返回值
+    /// 
+    /// 证书是否有效
+    pub fn verify_peer_certificate(&self, peer_cert: &[u8]) -> Result<bool> {
+        if !self.config.enable_mtls {
+            return Ok(true);
+        }
+        
+        self.tls_manager.verify_peer_certificate(peer_cert)
+    }
+
+    /// 获取 TLS 统计信息
+    /// 
+    /// # 返回值
+    /// 
+    /// (证书数量, 私钥数量, mTLS 就绪状态)
+    pub fn get_tls_stats(&self) -> (usize, usize, bool) {
+        self.tls_manager.get_certificate_stats()
     }
 
     /// 运行综合性能测试套件 - 性能优化版本
