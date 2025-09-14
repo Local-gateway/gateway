@@ -1,12 +1,15 @@
 //! 网关注册表模块
 //! 
 //! 管理网关的注册表，存储网络中其他网关的信息。
+//! 使用lock-free数据结构实现高性能并发访问。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::net::SocketAddr;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use std::sync::Arc;
+use atomic_refcell::AtomicRefCell;
 
 /// 注册表条目
 /// 
@@ -52,12 +55,22 @@ impl RegistryEntry {
 /// 网关注册表
 /// 
 /// 管理网络中所有已知网关的注册信息。
-#[derive(Debug, Clone)]
+/// 使用DashMap实现lock-free并发访问。
+#[derive(Debug)]
 pub struct Registry {
-    /// 存储所有注册的网关条目
-    entries: HashMap<Uuid, RegistryEntry>,
+    /// 存储所有注册的网关条目 (lock-free)
+    entries: Arc<DashMap<Uuid, RegistryEntry>>,
     /// 本网关的信息
-    local_entry: RegistryEntry,
+    local_entry: Arc<AtomicRefCell<RegistryEntry>>,
+}
+
+impl Clone for Registry {
+    fn clone(&self) -> Self {
+        Self {
+            entries: Arc::clone(&self.entries),
+            local_entry: Arc::clone(&self.local_entry),
+        }
+    }
 }
 
 impl Registry {
@@ -73,14 +86,14 @@ impl Registry {
     /// 新创建的注册表实例
     pub fn new(local_name: String, local_address: SocketAddr) -> Self {
         Self {
-            entries: HashMap::new(),
-            local_entry: RegistryEntry::new(local_name, local_address),
+            entries: Arc::new(DashMap::new()),
+            local_entry: Arc::new(AtomicRefCell::new(RegistryEntry::new(local_name, local_address))),
         }
     }
 
     /// 获取本网关信息
-    pub fn local_entry(&self) -> &RegistryEntry {
-        &self.local_entry
+    pub fn local_entry(&self) -> RegistryEntry {
+        self.local_entry.borrow().clone()
     }
 
     /// 添加或更新网关条目
@@ -92,9 +105,10 @@ impl Registry {
     /// # 返回值
     /// 
     /// 如果是新添加的条目返回 true，如果是更新现有条目返回 false
-    pub fn add_or_update(&mut self, mut entry: RegistryEntry) -> bool {
+    pub fn add_or_update(&self, mut entry: RegistryEntry) -> bool {
         // 不添加自己
-        if entry.id == self.local_entry.id {
+        let local_id = self.local_entry.borrow().id;
+        if entry.id == local_id {
             return false;
         }
 
@@ -112,9 +126,9 @@ impl Registry {
     /// 
     /// # 返回值
     /// 
-    /// 如果找到返回条目的引用，否则返回 None
-    pub fn get(&self, id: &Uuid) -> Option<&RegistryEntry> {
-        self.entries.get(id)
+    /// 如果找到返回条目的拷贝，否则返回 None
+    pub fn get(&self, id: &Uuid) -> Option<RegistryEntry> {
+        self.entries.get(id).map(|entry| entry.clone())
     }
 
     /// 根据地址获取网关条目
@@ -125,9 +139,9 @@ impl Registry {
     /// 
     /// # 返回值
     /// 
-    /// 如果找到返回条目的引用，否则返回 None
-    pub fn get_by_address(&self, address: &SocketAddr) -> Option<&RegistryEntry> {
-        self.entries.values().find(|entry| entry.address == *address)
+    /// 如果找到返回条目的拷贝，否则返回 None
+    pub fn get_by_address(&self, address: &SocketAddr) -> Option<RegistryEntry> {
+        self.entries.iter().find(|entry| entry.address == *address).map(|entry| entry.clone())
     }
 
     /// 移除网关条目
@@ -139,7 +153,7 @@ impl Registry {
     /// # 返回值
     /// 
     /// 如果条目存在并被移除返回 true，否则返回 false
-    pub fn remove(&mut self, id: &Uuid) -> bool {
+    pub fn remove(&self, id: &Uuid) -> bool {
         self.entries.remove(id).is_some()
     }
 
@@ -149,7 +163,7 @@ impl Registry {
     /// 
     /// 所有条目的向量
     pub fn all_entries(&self) -> Vec<RegistryEntry> {
-        self.entries.values().cloned().collect()
+        self.entries.iter().map(|entry| entry.clone()).collect()
     }
 
     /// 获取除指定条目外的所有条目
@@ -163,9 +177,9 @@ impl Registry {
     /// 过滤后的条目向量
     pub fn entries_except(&self, exclude_id: &Uuid) -> Vec<RegistryEntry> {
         self.entries
-            .values()
+            .iter()
             .filter(|entry| entry.id != *exclude_id)
-            .cloned()
+            .map(|entry| entry.clone())
             .collect()
     }
 
@@ -180,20 +194,23 @@ impl Registry {
     /// # 返回值
     /// 
     /// 被清理的条目数量
-    pub fn cleanup_expired(&mut self, timeout_seconds: i64) -> usize {
+    pub fn cleanup_expired(&self, timeout_seconds: i64) -> usize {
         let cutoff_time = Utc::now() - chrono::Duration::seconds(timeout_seconds);
         let expired_ids: Vec<Uuid> = self
             .entries
             .iter()
-            .filter(|(_, entry)| entry.last_seen < cutoff_time)
-            .map(|(id, _)| *id)
+            .filter(|entry| entry.last_seen < cutoff_time)
+            .map(|entry| entry.id)
             .collect();
 
+        let mut count = 0;
         for id in &expired_ids {
-            self.entries.remove(id);
+            if self.entries.remove(id).is_some() {
+                count += 1;
+            }
         }
 
-        expired_ids.len()
+        count
     }
 
     /// 获取注册表大小
@@ -261,7 +278,7 @@ mod tests {
     #[test]
     fn test_registry_add_entry() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let remote_address = create_test_address(55556);
         let entry = RegistryEntry::new("远程网关".to_string(), remote_address);
@@ -278,7 +295,7 @@ mod tests {
     #[test]
     fn test_registry_update_existing_entry() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let remote_address = create_test_address(55556);
         let entry = RegistryEntry::new("远程网关".to_string(), remote_address);
@@ -299,7 +316,7 @@ mod tests {
     #[test]
     fn test_registry_prevent_self_registration() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         // 尝试添加自己
         let is_new = registry.add_or_update(registry.local_entry().clone());
@@ -310,7 +327,7 @@ mod tests {
     #[test]
     fn test_registry_get_by_address() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let remote_address = create_test_address(55556);
         let entry = RegistryEntry::new("远程网关".to_string(), remote_address);
@@ -325,7 +342,7 @@ mod tests {
     #[test]
     fn test_registry_remove_entry() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let remote_address = create_test_address(55556);
         let entry = RegistryEntry::new("远程网关".to_string(), remote_address);
@@ -345,7 +362,7 @@ mod tests {
     #[test]
     fn test_registry_entries_except() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let entry1 = RegistryEntry::new("网关1".to_string(), create_test_address(55556));
         let entry2 = RegistryEntry::new("网关2".to_string(), create_test_address(55557));
@@ -363,7 +380,7 @@ mod tests {
     #[test]
     fn test_registry_cleanup_expired() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         // 添加一些条目
         let entry1 = RegistryEntry::new("网关1".to_string(), create_test_address(55556));
@@ -388,7 +405,7 @@ mod tests {
     #[test]
     fn test_registry_all_entries() {
         let local_address = create_test_address(55555);
-        let mut registry = Registry::new("本地网关".to_string(), local_address);
+        let registry = Registry::new("本地网关".to_string(), local_address);
         
         let entry1 = RegistryEntry::new("网关1".to_string(), create_test_address(55556));
         let entry2 = RegistryEntry::new("网关2".to_string(), create_test_address(55557));

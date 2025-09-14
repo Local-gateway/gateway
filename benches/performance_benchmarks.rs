@@ -2,11 +2,11 @@
 //!
 //! 测试网关各个组件的性能指标，包括内存使用、吞吐量、延迟等关键指标。
 
-use criterion::{criterion_group, criterion_main, Criterion, black_box, BenchmarkId, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use std::time::Duration;
+use std::hint::black_box;
 use tokio::runtime::Runtime;
 use wdic_gateway::{
-    UdpBroadcastManager, 
     UdpToken, 
     DirectoryIndex,
     DirectoryEntry,
@@ -105,7 +105,7 @@ fn bench_directory_operations(c: &mut Criterion) {
 
 /// 测试网络操作性能
 fn bench_network_operations(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
+    let _rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("网络操作性能测试");
     group.sample_size(50); // 减少样本数量，因为网络操作比较慢
     

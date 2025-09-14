@@ -19,6 +19,7 @@ use crate::udp_protocol::{UdpBroadcastManager, UdpBroadcastEvent, UdpToken};
 use crate::performance::{PerformanceMonitor, PerformanceTestSuite, BenchmarkResult};
 use crate::cache::{GatewayCache, CacheMetadata};
 use crate::tls::{TlsManager, MtlsConfig};
+use crate::compression::{CompressionManager, CompressionConfig};
 
 /// 网关配置
 #[derive(Debug, Clone)]
@@ -78,11 +79,12 @@ impl Default for GatewayConfig {
 /// 
 /// 网关的主要实现，负责协调各个模块的工作。
 /// 增强版本支持缓存系统、TLS 1.3 mTLS、zstd 压缩和 IPv6/IPv4 双栈。
+/// 优化版本：使用lock-free并发和自动压缩。
 pub struct Gateway {
     /// 网关配置
     config: GatewayConfig,
-    /// 网关注册表
-    registry: Arc<RwLock<Registry>>,
+    /// 网关注册表 (lock-free)
+    registry: Arc<Registry>,
     /// 网络管理器（QUIC 协议）
     network_manager: Arc<NetworkManager>,
     /// UDP 广播管理器
@@ -93,6 +95,8 @@ pub struct Gateway {
     cache: Arc<Mutex<GatewayCache>>,
     /// TLS 管理器
     tls_manager: Arc<TlsManager>,
+    /// 压缩管理器
+    compression_manager: Arc<CompressionManager>,
     /// 运行状态
     running: Arc<Mutex<bool>>,
 }
