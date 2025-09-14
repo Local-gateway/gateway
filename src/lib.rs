@@ -28,6 +28,8 @@ pub mod protocol;
 pub mod network;
 pub mod udp_protocol;
 pub mod performance;
+pub mod cache;
+pub mod tls;
 
 pub use gateway::{Gateway, GatewayConfig};
 pub use registry::{Registry, RegistryEntry};
@@ -35,3 +37,5 @@ pub use protocol::WdicProtocol;
 pub use network::NetworkManager;
 pub use udp_protocol::{UdpBroadcastManager, UdpToken, DirectoryIndex, DirectoryEntry, UdpBroadcastEvent};
 pub use performance::{PerformanceMonitor, PerformanceReport, PerformanceTestSuite, BenchmarkResult};
+pub use cache::{GatewayCache, CacheMetadata, CacheEntry};
+pub use tls::{TlsManager, MtlsConfig, VerifyMode, TlsVersion};
