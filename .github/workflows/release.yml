@@ -148,6 +148,10 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf nasm
+
+    - name: Install NASM (Windows)
+      if: runner.os == 'Windows'
+      run: choco install nasm
     
     - name: Build binary
       run: cargo build --release --target ${{ matrix.target }}
