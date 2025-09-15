@@ -18,23 +18,13 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    if: false  # Disable this job since we're using softprops/action-gh-release in build jobs
     steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-        release_name: Release ${{ github.event.inputs.tag || github.ref_name }}
-        draft: false
-        prerelease: false
+    - name: Placeholder
+      run: echo "Release creation handled by build jobs"
 
   build-and-upload:
     name: Build and Upload
-    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -109,7 +99,7 @@ jobs:
         targets: ${{ matrix.target }}
     
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -166,18 +156,15 @@ jobs:
         fi
     
     - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
+      uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ matrix.asset_name }}
-        asset_name: ${{ matrix.asset_name }}
-        asset_content_type: application/octet-stream
+        tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+        files: ${{ matrix.asset_name }}
 
   build-harmonyos:
     name: Build HarmonyOS
-    needs: create-release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -192,7 +179,7 @@ jobs:
         targets: ${{ matrix.target }}
     
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -230,11 +217,9 @@ jobs:
       run: cp target/${{ matrix.target }}/release/wdic-gateway ${{ env.ASSET_NAME }}
     
     - name: Upload HarmonyOS Release Asset
-      uses: actions/upload-release-asset@v1
+      uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ env.ASSET_NAME }}
-        asset_name: ${{ env.ASSET_NAME }}
-        asset_content_type: application/octet-stream
+        tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+        files: ${{ env.ASSET_NAME }}
