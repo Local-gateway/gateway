@@ -1,14 +1,14 @@
 //! 网络管理模块
-//! 
+//!
 //! 处理 QUIC 连接、UDP 广播和网络通信，支持 IPv4/IPv6 双栈网络。
 
+use anyhow::Result;
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{Duration, interval};
-use anyhow::Result;
-use log::{info, warn, error, debug};
+use tokio::time::{interval, Duration};
 
 use crate::protocol::{WdicMessage, WdicProtocol};
 
@@ -79,7 +79,7 @@ impl ConnectionState {
 }
 
 /// 网络管理器
-/// 
+///
 /// 负责处理网络通信，包括 UDP 广播和消息收发。
 pub struct NetworkManager {
     /// 本地地址
@@ -100,13 +100,13 @@ pub struct NetworkManager {
 
 impl NetworkManager {
     /// 创建新的网络管理器
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `local_addr` - 本地监听地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 网络管理器实例
     pub fn new(local_addr: SocketAddr) -> Result<Self> {
         let udp_socket = UdpSocket::bind(local_addr)?;
@@ -140,22 +140,22 @@ impl NetworkManager {
     }
 
     /// 生成广播地址列表
-    /// 
+    ///
     /// 根据本地地址生成可能的广播地址。
     /// 生成广播地址列表（支持 IPv4/IPv6 双栈）
-    /// 
+    ///
     /// 这个函数会：
     /// 1. 发现本地所有网络接口
     /// 2. 为 IPv4 地址生成广播地址
     /// 3. 为 IPv6 地址生成多播地址
     /// 4. 优先使用内网地址，在没有内网地址时使用公网地址
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `local_addr` - 本地绑定地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 广播和多播地址列表
     fn generate_broadcast_addresses(local_addr: SocketAddr) -> Vec<SocketAddr> {
         let mut addresses = Vec::new();
@@ -262,7 +262,7 @@ impl NetworkManager {
     fn add_ipv4_broadcasts(addresses: &mut Vec<SocketAddr>, ipv4_addrs: &[Ipv4Addr], port: u16) {
         for &ip in ipv4_addrs {
             let octets = ip.octets();
-            
+
             // 基于具体 IP 地址生成子网广播地址
             if octets[0] == 192 && octets[1] == 168 {
                 addresses.push(SocketAddr::from(([192, 168, octets[2], 255], port)));
@@ -282,7 +282,11 @@ impl NetworkManager {
     }
 
     /// 添加 IPv4 公网广播地址
-    fn add_ipv4_public_broadcasts(addresses: &mut Vec<SocketAddr>, _ipv4_addrs: &[Ipv4Addr], port: u16) {
+    fn add_ipv4_public_broadcasts(
+        addresses: &mut Vec<SocketAddr>,
+        _ipv4_addrs: &[Ipv4Addr],
+        port: u16,
+    ) {
         // 对于公网地址，我们只能使用有限广播
         addresses.push(SocketAddr::from(([255, 255, 255, 255], port)));
     }
@@ -294,13 +298,13 @@ impl NetworkManager {
             IpAddr::V6(Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 1)),
             port,
         ));
-        
+
         // 链路本地多播 (ff02::1)
         addresses.push(SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
             port,
         ));
-        
+
         // 自定义的 WDIC 多播地址 (ff05::5555)
         addresses.push(SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 0x5555)),
@@ -319,7 +323,7 @@ impl NetworkManager {
     }
 
     /// 启动网络服务
-    /// 
+    ///
     /// 开始监听网络消息和处理连接。
     pub async fn start(&self) -> Result<()> {
         info!("网络管理器在 {} 启动", self.local_addr);
@@ -374,7 +378,7 @@ impl NetworkManager {
                     match WdicMessage::from_bytes(&buffer[..size]) {
                         Ok(message) => {
                             debug!("解析消息成功: {}", message.message_type());
-                            
+
                             // 验证消息
                             if let Err(e) = protocol.validate_message(&message) {
                                 warn!("消息验证失败: {}", e);
@@ -407,7 +411,9 @@ impl NetworkManager {
     }
 
     /// 连接清理任务
-    async fn connection_cleanup_task(connections: Arc<Mutex<HashMap<SocketAddr, ConnectionState>>>) {
+    async fn connection_cleanup_task(
+        connections: Arc<Mutex<HashMap<SocketAddr, ConnectionState>>>,
+    ) {
         let mut cleanup_interval = interval(Duration::from_secs(60));
 
         loop {
@@ -428,41 +434,45 @@ impl NetworkManager {
     }
 
     /// 发送消息到指定地址
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `message` - 要发送的消息
     /// * `target` - 目标地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 发送结果
     pub async fn send_message(&self, message: &WdicMessage, target: SocketAddr) -> Result<()> {
         let data = message.to_bytes()?;
-        
+
         debug!("发送 {} 消息到 {}", message.message_type(), target);
-        
-        self.udp_socket.send_to(&data, target).map_err(|e| {
-            anyhow::anyhow!("发送消息到 {} 失败: {}", target, e)
-        })?;
+
+        self.udp_socket
+            .send_to(&data, target)
+            .map_err(|e| anyhow::anyhow!("发送消息到 {} 失败: {}", target, e))?;
 
         Ok(())
     }
 
     /// 广播消息到本地网络
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `message` - 要广播的消息
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 成功发送的地址数量
     pub async fn broadcast_message(&self, message: &WdicMessage) -> Result<usize> {
         let data = message.to_bytes()?;
         let mut success_count = 0;
 
-        info!("广播 {} 消息到 {} 个地址", message.message_type(), self.broadcast_addresses.len());
+        info!(
+            "广播 {} 消息到 {} 个地址",
+            message.message_type(),
+            self.broadcast_addresses.len()
+        );
 
         for &broadcast_addr in &self.broadcast_addresses {
             match self.udp_socket.send_to(&data, broadcast_addr) {
@@ -485,52 +495,56 @@ impl NetworkManager {
     }
 
     /// 回复消息到发送者
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `response` - 响应消息
     /// * `original_sender` - 原始发送者地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 发送结果
-    pub async fn reply_message(&self, response: &WdicMessage, original_sender: SocketAddr) -> Result<()> {
+    pub async fn reply_message(
+        &self,
+        response: &WdicMessage,
+        original_sender: SocketAddr,
+    ) -> Result<()> {
         self.send_message(response, original_sender).await
     }
 
     /// 获取当前活跃连接数
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 活跃连接数量
     pub async fn active_connections_count(&self) -> usize {
         self.connections.lock().await.len()
     }
 
     /// 获取所有活跃连接
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 活跃连接状态列表
     pub async fn get_active_connections(&self) -> Vec<ConnectionState> {
         self.connections.lock().await.values().cloned().collect()
     }
 
     /// 断开指定连接
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `addr` - 要断开的连接地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 是否成功断开连接
     pub async fn disconnect(&self, addr: SocketAddr) -> bool {
         let mut conns = self.connections.lock().await;
         if conns.remove(&addr).is_some() {
-            let _ = self.event_sender.send(NetworkEvent::ConnectionLost {
-                remote_addr: addr,
-            });
+            let _ = self
+                .event_sender
+                .send(NetworkEvent::ConnectionLost { remote_addr: addr });
             true
         } else {
             false
@@ -540,7 +554,7 @@ impl NetworkManager {
     /// 关闭网络管理器
     pub async fn shutdown(&self) -> Result<()> {
         info!("关闭网络管理器");
-        
+
         // 清空所有连接
         {
             let mut conns = self.connections.lock().await;
@@ -564,20 +578,20 @@ mod tests {
     fn test_connection_state() {
         let addr = create_test_addr(55555);
         let mut state = ConnectionState::new(addr);
-        
+
         assert_eq!(state.remote_addr, addr);
         assert!(state.last_active <= chrono::Utc::now());
         assert_eq!(state.last_active, state.established_at);
-        
+
         // 测试活跃时间更新
         let original_time = state.last_active;
         std::thread::sleep(std::time::Duration::from_millis(1));
         state.update_activity();
         assert!(state.last_active > original_time);
-        
+
         // 测试超时检查
         assert!(!state.is_expired(3600)); // 1小时不会超时
-        
+
         // 创建过期连接
         state.last_active = chrono::Utc::now() - chrono::Duration::seconds(7200);
         assert!(state.is_expired(3600)); // 2小时前的连接超时
@@ -587,17 +601,22 @@ mod tests {
     fn test_broadcast_addresses_generation() {
         let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 55555);
         let addresses = NetworkManager::generate_broadcast_addresses(local_addr);
-        
+
         assert!(!addresses.is_empty());
         // 检查是否包含至少一个广播地址
-        let has_ipv4_broadcast = addresses.iter().any(|addr| matches!(addr.ip(), IpAddr::V4(_)));
+        let has_ipv4_broadcast = addresses
+            .iter()
+            .any(|addr| matches!(addr.ip(), IpAddr::V4(_)));
         let has_valid_port = addresses.iter().all(|addr| addr.port() == 55555);
-        
+
         assert!(has_ipv4_broadcast, "应该至少包含一个 IPv4 广播地址");
         assert!(has_valid_port, "所有地址应该使用正确的端口");
-        
+
         // 在没有网络接口的环境中，应该至少有后备地址
-        if addresses.iter().any(|addr| addr == &SocketAddr::from(([255, 255, 255, 255], 55555))) {
+        if addresses
+            .iter()
+            .any(|addr| addr == &SocketAddr::from(([255, 255, 255, 255], 55555)))
+        {
             // 如果有全网广播地址，测试通过
             assert!(true);
         } else {
@@ -609,16 +628,19 @@ mod tests {
     #[test]
     fn test_ipv6_multicast_addresses_generation() {
         // 测试 IPv6 多播地址生成
-        let local_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 55555);
+        let local_addr = SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            55555,
+        );
         let addresses = NetworkManager::generate_broadcast_addresses(local_addr);
-        
+
         assert!(!addresses.is_empty());
-        
+
         // 检查 IPv6 多播地址是否正确生成
-        let _has_ipv6_multicast = addresses.iter().any(|addr| {
-            matches!(addr.ip(), IpAddr::V6(ipv6) if ipv6.segments()[0] & 0xff00 == 0xff00)
-        });
-        
+        let _has_ipv6_multicast = addresses.iter().any(
+            |addr| matches!(addr.ip(), IpAddr::V6(ipv6) if ipv6.segments()[0] & 0xff00 == 0xff00),
+        );
+
         // 如果系统支持 IPv6，应该有多播地址
         let has_valid_port = addresses.iter().all(|addr| addr.port() == 55555);
         assert!(has_valid_port, "所有地址应该使用正确的端口");
@@ -626,36 +648,58 @@ mod tests {
 
     #[test]
     fn test_private_ipv4_detection() {
-        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(
+            192, 168, 1, 1
+        )));
         assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(10, 0, 0, 1)));
-        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(172, 16, 0, 1)));
-        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(172, 31, 255, 255)));
-        
+        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(
+            172, 16, 0, 1
+        )));
+        assert!(NetworkManager::is_private_ipv4(Ipv4Addr::new(
+            172, 31, 255, 255
+        )));
+
         assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(8, 8, 8, 8)));
         assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(1, 1, 1, 1)));
-        assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(172, 15, 0, 1))); // 不在私有范围
-        assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(172, 32, 0, 1))); // 不在私有范围
+        assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(
+            172, 15, 0, 1
+        ))); // 不在私有范围
+        assert!(!NetworkManager::is_private_ipv4(Ipv4Addr::new(
+            172, 32, 0, 1
+        ))); // 不在私有范围
     }
 
     #[test]
     fn test_private_ipv6_detection() {
         // 链路本地地址 (fe80::/10)
-        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)));
-        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(0xfebf, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff)));
-        
+        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        )));
+        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0xfebf, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff
+        )));
+
         // 唯一本地地址 (fc00::/7)
-        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1)));
-        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)));
-        
+        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        )));
+        assert!(NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0xfd00, 0, 0, 0, 0, 0, 0, 1
+        )));
+
         // 公网地址
-        assert!(!NetworkManager::is_private_ipv6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888))); // Google DNS
-        assert!(!NetworkManager::is_private_ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))); // 文档地址
+        assert!(!NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888
+        ))); // Google DNS
+        assert!(!NetworkManager::is_private_ipv6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0, 1
+        ))); // 文档地址
     }
 
     #[test]
     fn test_fallback_addresses_generation() {
         let addresses = NetworkManager::generate_fallback_addresses(12345);
-        
+
         assert!(!addresses.is_empty());
         assert!(addresses.contains(&SocketAddr::from(([255, 255, 255, 255], 12345))));
         assert!(addresses.contains(&SocketAddr::from(([192, 168, 255, 255], 12345))));
@@ -667,7 +711,7 @@ mod tests {
     async fn test_network_manager_creation() {
         let local_addr = create_test_addr(0); // 使用端口 0 让系统分配
         let manager = NetworkManager::new(local_addr);
-        
+
         assert!(manager.is_ok());
         let _manager = manager.unwrap();
         // 端口 0 会被系统分配一个有效端口，或者保持 0 但绑定成功
@@ -678,11 +722,11 @@ mod tests {
     async fn test_network_manager_basic_operations() {
         let local_addr = create_test_addr(0);
         let manager = NetworkManager::new(local_addr).expect("创建网络管理器失败");
-        
+
         // 测试基本属性
         assert_eq!(manager.active_connections_count().await, 0);
         assert!(manager.get_active_connections().await.is_empty());
-        
+
         // 测试关闭
         assert!(manager.shutdown().await.is_ok());
     }

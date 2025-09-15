@@ -1,11 +1,11 @@
 //! WDIC 网关缓存系统演示
-//! 
+//!
 //! 展示网关缓存系统的功能，包括文件缓存、压缩、哈希计算和网络广播。
 
-use wdic_gateway::{Gateway, GatewayConfig};
 use log::info;
 use std::time::Duration;
 use tokio::time::sleep;
+use wdic_gateway::{Gateway, GatewayConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,15 +21,15 @@ async fn main() -> anyhow::Result<()> {
         enable_ipv6: true,
         enable_mtls: true,
         enable_compression: true,
-        cache_default_ttl: 60, // 1分钟TTL用于演示
+        cache_default_ttl: 60,            // 1分钟TTL用于演示
         max_cache_size: 10 * 1024 * 1024, // 10MB缓存
-        cache_cleanup_interval: 30, // 30秒清理一次
+        cache_cleanup_interval: 30,       // 30秒清理一次
         ..Default::default()
     };
 
     // 创建网关实例
     let gateway = Gateway::with_config(config).await?;
-    
+
     info!("网关创建成功");
     info!("QUIC 地址: {}", gateway.local_addr());
     info!("UDP 地址: {}", gateway.udp_local_addr());
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     // 启动网关
     let gateway_clone = std::sync::Arc::new(gateway);
     let gateway_for_task = gateway_clone.clone();
-    
+
     tokio::spawn(async move {
         if let Err(e) = gateway_for_task.run().await {
             eprintln!("网关运行错误: {}", e);
@@ -52,17 +52,35 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. 缓存一些示例文件
     let test_files = vec![
-        ("readme.txt", "这是一个 README 文件内容。包含项目说明和使用方法。"),
-        ("config.json", r#"{"name":"test","version":"1.0","debug":true}"#),
-        ("data.xml", r#"<root><item id="1">测试数据</item><item id="2">更多数据</item></root>"#),
-        ("script.js", "function hello() { console.log('Hello, World!'); }"),
-        ("style.css", "body { font-family: Arial; color: #333; margin: 0; padding: 20px; }"),
+        (
+            "readme.txt",
+            "这是一个 README 文件内容。包含项目说明和使用方法。",
+        ),
+        (
+            "config.json",
+            r#"{"name":"test","version":"1.0","debug":true}"#,
+        ),
+        (
+            "data.xml",
+            r#"<root><item id="1">测试数据</item><item id="2">更多数据</item></root>"#,
+        ),
+        (
+            "script.js",
+            "function hello() { console.log('Hello, World!'); }",
+        ),
+        (
+            "style.css",
+            "body { font-family: Arial; color: #333; margin: 0; padding: 20px; }",
+        ),
     ];
 
     info!("缓存 {} 个测试文件...", test_files.len());
-    
+
     for (name, content) in &test_files {
-        match gateway_clone.cache_file(name, content.as_bytes(), None).await {
+        match gateway_clone
+            .cache_file(name, content.as_bytes(), None)
+            .await
+        {
             Ok(hash) => {
                 info!("文件缓存成功: {} -> {}", name, &hash[..16]);
             }
@@ -74,8 +92,12 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. 显示缓存统计信息
     let (cache_count, cache_size, max_size) = gateway_clone.get_cache_stats().await;
-    info!("缓存统计: {} 个文件, {} / {} KB", 
-          cache_count, cache_size / 1024, max_size / 1024);
+    info!(
+        "缓存统计: {} 个文件, {} / {} KB",
+        cache_count,
+        cache_size / 1024,
+        max_size / 1024
+    );
 
     // 3. 获取缓存名称哈希列表
     let hash_list = gateway_clone.get_cache_name_hash_list().await;
@@ -92,10 +114,14 @@ async fn main() -> anyhow::Result<()> {
                 let retrieved_content = String::from_utf8_lossy(&data);
                 let compression_ratio = metadata.compression_ratio;
                 let is_match = retrieved_content == *original_content;
-                
-                info!("检索文件: {} - 匹配: {}, 压缩率: {:.2}%", 
-                      name, is_match, compression_ratio * 100.0);
-                
+
+                info!(
+                    "检索文件: {} - 匹配: {}, 压缩率: {:.2}%",
+                    name,
+                    is_match,
+                    compression_ratio * 100.0
+                );
+
                 if !is_match {
                     eprintln!("  警告: 内容不匹配!");
                     eprintln!("  原始: {:?}", original_content);
@@ -114,16 +140,14 @@ async fn main() -> anyhow::Result<()> {
     // 5. TLS 状态检查
     info!("=== TLS 状态检查 ===");
     let (cert_count, key_count, mtls_ready) = gateway_clone.get_tls_stats();
-    info!("TLS 证书: {}, 私钥: {}, mTLS 就绪: {}", 
-          cert_count, key_count, mtls_ready);
+    info!(
+        "TLS 证书: {}, 私钥: {}, mTLS 就绪: {}",
+        cert_count, key_count, mtls_ready
+    );
 
     // 6. 网络距离计算演示
     info!("=== 网络距离计算演示 ===");
-    let test_addresses = vec![
-        "127.0.0.1:8080",
-        "192.168.1.1:80",
-        "8.8.8.8:53",
-    ];
+    let test_addresses = vec!["127.0.0.1:8080", "192.168.1.1:80", "8.8.8.8:53"];
 
     for addr_str in &test_addresses {
         if let Ok(addr) = addr_str.parse() {
@@ -142,15 +166,18 @@ async fn main() -> anyhow::Result<()> {
     info!("=== 心跳广播演示 ===");
     for i in 1..=3 {
         info!("第 {} 次心跳广播...", i);
-        
+
         // 显示当前网关状态
         let (registry_size, active_connections) = gateway_clone.get_stats().await;
-        info!("网关状态 - 注册表: {}, 连接: {}", registry_size, active_connections);
-        
+        info!(
+            "网关状态 - 注册表: {}, 连接: {}",
+            registry_size, active_connections
+        );
+
         // 获取最新的缓存哈希列表（会在心跳时广播）
         let current_hashes = gateway_clone.get_cache_name_hash_list().await;
         info!("当前缓存: {} 个文件哈希", current_hashes.len());
-        
+
         sleep(Duration::from_secs(5)).await;
     }
 
@@ -167,8 +194,11 @@ async fn main() -> anyhow::Result<()> {
 
     // 最终统计
     let (final_cache_count, final_cache_size, _) = gateway_clone.get_cache_stats().await;
-    info!("最终缓存统计: {} 个文件, {} KB", 
-          final_cache_count, final_cache_size / 1024);
+    info!(
+        "最终缓存统计: {} 个文件, {} KB",
+        final_cache_count,
+        final_cache_size / 1024
+    );
 
     // 停止网关
     info!("停止网关...");

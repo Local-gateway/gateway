@@ -1,19 +1,19 @@
 //! UDP 广播协议模块
-//! 
+//!
 //! 实现基于 UDP 的 WDIC 协议自主广播功能，支持 IPv4/IPv6 双栈网络，所有网关都是一等公民。
 //! 性能优化版本：使用 SmallVec 减少堆分配，使用 AHash 提升 HashMap 性能。
 
 use ahash::AHashMap;
+use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
+use log::{debug, info};
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::net::{SocketAddr, UdpSocket, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::Duration;
-use anyhow::Result;
-use log::{info, debug};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use base64::{Engine as _, engine::general_purpose};
 
 use crate::protocol::WdicMessage;
 
@@ -131,82 +131,87 @@ pub struct DirectoryIndex {
 
 impl DirectoryIndex {
     /// 生成目录索引
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `path` - 目录路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 目录索引实例
     pub fn generate(path: &str) -> Result<Self> {
         let mut entries = Vec::new();
-        
-        fn scan_directory(dir_path: &std::path::Path, entries: &mut Vec<DirectoryEntry>) -> Result<()> {
+
+        fn scan_directory(
+            dir_path: &std::path::Path,
+            entries: &mut Vec<DirectoryEntry>,
+        ) -> Result<()> {
             if !dir_path.exists() {
                 return Err(anyhow::anyhow!("目录不存在: {}", dir_path.display()));
             }
-            
+
             for entry in std::fs::read_dir(dir_path)? {
                 let entry = entry?;
                 let path = entry.path();
                 let metadata = entry.metadata()?;
-                
+
                 let dir_entry = DirectoryEntry {
                     path: path.to_string_lossy().to_string(),
                     size: metadata.len(),
                     is_dir: metadata.is_dir(),
-                    modified: metadata.modified()
+                    modified: metadata
+                        .modified()
                         .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
                         .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
                         .unwrap_or(None)
                         .unwrap_or_else(chrono::Utc::now),
                 };
-                
+
                 entries.push(dir_entry);
-                
+
                 // 递归扫描子目录
                 if metadata.is_dir() {
                     scan_directory(&path, entries)?;
                 }
             }
-            
+
             Ok(())
         }
-        
+
         let root_path = std::path::Path::new(path);
         scan_directory(root_path, &mut entries)?;
-        
+
         Ok(Self {
             root_path: path.to_string(),
             entries,
             generated_at: chrono::Utc::now(),
         })
     }
-    
+
     /// 搜索文件 - 性能优化版本
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `keywords` - 搜索关键词
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 匹配的文件路径列表，使用 SmallVec 减少小结果集的堆分配
     pub fn search(&self, keywords: &[String]) -> SmallVec<[String; 8]> {
         // 预处理关键词：转换为小写并存储在栈上的小向量中
-        let keywords_lower: SmallVec<[String; 4]> = keywords
-            .iter()
-            .map(|k| k.to_lowercase())
-            .collect();
-        
+        let keywords_lower: SmallVec<[String; 4]> =
+            keywords.iter().map(|k| k.to_lowercase()).collect();
+
         // 使用更高效的过滤和收集方式
         let mut results = SmallVec::new();
-        
+
         for entry in &self.entries {
             let path_lower = entry.path.to_lowercase();
-            if keywords_lower.iter().any(|keyword| path_lower.contains(keyword)) {
+            if keywords_lower
+                .iter()
+                .any(|keyword| path_lower.contains(keyword))
+            {
                 results.push(entry.path.clone());
                 // 限制结果数量，避免过大的内存占用
                 if results.len() >= 1000 {
@@ -214,52 +219,51 @@ impl DirectoryIndex {
                 }
             }
         }
-        
+
         results
     }
-    
+
     /// 保存索引到文件 - 性能优化版本（使用JSON以确保兼容性）
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `output_path` - 输出文件路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 保存结果
     pub fn save_to_file(&self, output_path: &str) -> Result<()> {
         // 使用 JSON 以确保完全兼容性
         let serialized = serde_json::to_vec_pretty(self)
             .map_err(|e| anyhow::anyhow!("序列化目录索引失败: {}", e))?;
-        
+
         std::fs::write(output_path, serialized)
             .map_err(|e| anyhow::anyhow!("写入索引文件失败: {}", e))?;
-        
+
         info!("目录索引已保存到: {} (JSON格式)", output_path);
         Ok(())
     }
-    
+
     /// 从文件加载索引 - 性能优化版本
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `input_path` - 输入文件路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 目录索引实例
     pub fn load_from_file(input_path: &str) -> Result<Self> {
-        let data = std::fs::read(input_path)
-            .map_err(|e| anyhow::anyhow!("读取索引文件失败: {}", e))?;
-        
+        let data =
+            std::fs::read(input_path).map_err(|e| anyhow::anyhow!("读取索引文件失败: {}", e))?;
+
         // 使用 JSON 反序列化
-        serde_json::from_slice(&data)
-            .map_err(|e| anyhow::anyhow!("反序列化目录索引失败: {}", e))
+        serde_json::from_slice(&data).map_err(|e| anyhow::anyhow!("反序列化目录索引失败: {}", e))
     }
 }
 
 /// UDP 广播管理器
-/// 
+///
 /// 负责处理基于 UDP 的 WDIC 协议广播功能。
 /// 性能优化版本：使用 AHashMap 提升哈希表性能。
 pub struct UdpBroadcastManager {
@@ -281,13 +285,13 @@ pub struct UdpBroadcastManager {
 
 impl UdpBroadcastManager {
     /// 创建新的 UDP 广播管理器
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `local_addr` - 本地监听地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// UDP 广播管理器实例
     pub fn new(local_addr: SocketAddr) -> Result<Self> {
         let udp_socket = UdpSocket::bind(local_addr)?;
@@ -322,19 +326,19 @@ impl UdpBroadcastManager {
 
     /// 生成广播地址列表
     /// 生成广播地址列表（支持 IPv4/IPv6 双栈）- 性能优化版本
-    /// 
+    ///
     /// 这个函数会：
     /// 1. 发现本地所有网络接口
     /// 2. 为 IPv4 地址生成广播地址
     /// 3. 为 IPv6 地址生成多播地址
     /// 4. 优先使用内网地址，在没有内网地址时使用公网地址
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `local_addr` - 本地绑定地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 广播和多播地址列表，使用 SmallVec 减少堆分配
     fn generate_broadcast_addresses(local_addr: SocketAddr) -> SmallVec<[SocketAddr; 8]> {
         let mut addresses = SmallVec::new();
@@ -438,10 +442,14 @@ impl UdpBroadcastManager {
     }
 
     /// 添加 IPv4 私有网络广播地址 - 性能优化版本
-    fn add_ipv4_broadcasts(addresses: &mut SmallVec<[SocketAddr; 8]>, ipv4_addrs: &[Ipv4Addr], port: u16) {
+    fn add_ipv4_broadcasts(
+        addresses: &mut SmallVec<[SocketAddr; 8]>,
+        ipv4_addrs: &[Ipv4Addr],
+        port: u16,
+    ) {
         for &ip in ipv4_addrs {
             let octets = ip.octets();
-            
+
             // 基于具体 IP 地址生成子网广播地址
             if octets[0] == 192 && octets[1] == 168 {
                 addresses.push(SocketAddr::from(([192, 168, octets[2], 255], port)));
@@ -461,7 +469,11 @@ impl UdpBroadcastManager {
     }
 
     /// 添加 IPv4 公网广播地址 - 性能优化版本
-    fn add_ipv4_public_broadcasts(addresses: &mut SmallVec<[SocketAddr; 8]>, _ipv4_addrs: &[Ipv4Addr], port: u16) {
+    fn add_ipv4_public_broadcasts(
+        addresses: &mut SmallVec<[SocketAddr; 8]>,
+        _ipv4_addrs: &[Ipv4Addr],
+        port: u16,
+    ) {
         // 对于公网地址，我们只能使用有限广播
         addresses.push(SocketAddr::from(([255, 255, 255, 255], port)));
     }
@@ -473,13 +485,13 @@ impl UdpBroadcastManager {
             IpAddr::V6(Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 1)),
             port,
         ));
-        
+
         // 链路本地多播 (ff02::1)
         addresses.push(SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
             port,
         ));
-        
+
         // 自定义的 WDIC UDP 多播地址 (ff05::5556)
         addresses.push(SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 0x5556)),
@@ -498,9 +510,9 @@ impl UdpBroadcastManager {
     }
 
     /// 启动 UDP 广播服务
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 启动结果
     pub async fn start(&self) -> Result<()> {
         {
@@ -550,7 +562,9 @@ impl UdpBroadcastManager {
                         Err(e) => {
                             debug!("解析 UDP 令牌失败，尝试解析为 WDIC 消息: {}", e);
                             // 尝试解析为 WDIC 消息（向后兼容）
-                            if let Ok(_message) = serde_json::from_slice::<WdicMessage>(&buffer[..size]) {
+                            if let Ok(_message) =
+                                serde_json::from_slice::<WdicMessage>(&buffer[..size])
+                            {
                                 debug!("解析为 WDIC 消息成功，但在 UDP 广播管理器中忽略");
                             }
                         }
@@ -573,18 +587,18 @@ impl UdpBroadcastManager {
     }
 
     /// 广播令牌
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `token` - 要广播的令牌
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 成功发送的地址数量
     pub async fn broadcast_token(&self, token: &UdpToken) -> Result<usize> {
-        let data = serde_json::to_vec(token)
-            .map_err(|e| anyhow::anyhow!("序列化令牌失败: {}", e))?;
-        
+        let data =
+            serde_json::to_vec(token).map_err(|e| anyhow::anyhow!("序列化令牌失败: {}", e))?;
+
         let mut success_count = 0;
 
         for &broadcast_addr in &self.broadcast_addresses {
@@ -595,7 +609,10 @@ impl UdpBroadcastManager {
                 }
                 Err(e) => {
                     // 隐蔽 OS 异常
-                    debug!("广播到 {} 时出现 OS 异常（已隐蔽处理）: {}", broadcast_addr, e);
+                    debug!(
+                        "广播到 {} 时出现 OS 异常（已隐蔽处理）: {}",
+                        broadcast_addr, e
+                    );
                 }
             }
         }
@@ -610,21 +627,21 @@ impl UdpBroadcastManager {
     }
 
     /// 定向广播令牌到指定地址
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `token` - 要发送的令牌
     /// * `target` - 目标地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 发送结果
     pub async fn send_token_to(&self, token: &UdpToken, target: SocketAddr) -> Result<()> {
-        let data = serde_json::to_vec(token)
-            .map_err(|e| anyhow::anyhow!("序列化令牌失败: {}", e))?;
-        
+        let data =
+            serde_json::to_vec(token).map_err(|e| anyhow::anyhow!("序列化令牌失败: {}", e))?;
+
         debug!("发送令牌到 {}", target);
-        
+
         self.udp_socket.send_to(&data, target).map_err(|e| {
             // 隐蔽 OS 异常
             debug!("发送令牌到 {} 时出现 OS 异常: {}", target, e);
@@ -635,42 +652,42 @@ impl UdpBroadcastManager {
     }
 
     /// 挂载目录
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `name` - 挂载点名称
     /// * `path` - 目录路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 挂载结果
     pub async fn mount_directory(&self, name: String, path: String) -> Result<()> {
         info!("开始挂载目录: {} -> {}", name, path);
-        
+
         let index = DirectoryIndex::generate(&path)?;
-        
+
         // 保存索引文件
         let index_file = format!("{}.index", name);
         index.save_to_file(&index_file)?;
-        
+
         // 添加到挂载点
         {
             let mut mounted = self.mounted_directories.write().await;
             mounted.insert(name.clone(), index);
         }
-        
+
         info!("目录挂载成功: {}", name);
         Ok(())
     }
 
     /// 卸载目录
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `name` - 挂载点名称
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 是否成功卸载
     pub async fn unmount_directory(&self, name: &str) -> bool {
         let mut mounted = self.mounted_directories.write().await;
@@ -678,9 +695,9 @@ impl UdpBroadcastManager {
     }
 
     /// 获取已挂载目录列表
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 挂载点名称列表
     pub async fn get_mounted_directories(&self) -> Vec<String> {
         let mounted = self.mounted_directories.read().await;
@@ -688,50 +705,49 @@ impl UdpBroadcastManager {
     }
 
     /// 搜索文件
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `keywords` - 搜索关键词
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 匹配的文件路径列表
     pub async fn search_files(&self, keywords: &[String]) -> Vec<String> {
         let mounted = self.mounted_directories.read().await;
         let mut results = Vec::new();
-        
+
         for index in mounted.values() {
             results.extend(index.search(keywords));
         }
-        
+
         results
     }
 
     /// 读取文件内容
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `file_path` - 文件路径
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 文件内容（Base64 编码）
     pub async fn read_file(&self, file_path: &str) -> Result<String> {
-        let data = std::fs::read(file_path)
-            .map_err(|e| anyhow::anyhow!("读取文件失败: {}", e))?;
-        
+        let data = std::fs::read(file_path).map_err(|e| anyhow::anyhow!("读取文件失败: {}", e))?;
+
         Ok(general_purpose::STANDARD.encode(&data))
     }
 
     /// 发送信息消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender_id` - 发送者 ID
     /// * `content` - 消息内容
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 发送结果
     pub async fn send_info_message(&self, sender_id: Uuid, content: String) -> Result<usize> {
         let token = UdpToken::InfoMessage {
@@ -739,42 +755,47 @@ impl UdpBroadcastManager {
             content,
             message_id: Uuid::new_v4(),
         };
-        
+
         self.broadcast_token(&token).await
     }
 
     /// 执行性能测试
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `tester_id` - 测试者 ID
     /// * `test_type` - 测试类型
     /// * `data_size` - 测试数据大小
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 测试结果（延迟毫秒数）
-    pub async fn performance_test(&self, tester_id: Uuid, test_type: String, data_size: usize) -> Result<u64> {
+    pub async fn performance_test(
+        &self,
+        tester_id: Uuid,
+        test_type: String,
+        data_size: usize,
+    ) -> Result<u64> {
         let start_time = chrono::Utc::now();
-        
+
         let token = UdpToken::PerformanceTest {
             tester_id,
             test_type,
             data_size,
             start_time,
         };
-        
+
         let start = std::time::Instant::now();
         self.broadcast_token(&token).await?;
         let elapsed = start.elapsed();
-        
+
         Ok(elapsed.as_millis() as u64)
     }
 
     /// 停止 UDP 广播管理器
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 停止结果
     pub async fn stop(&self) -> Result<()> {
         info!("停止 UDP 广播管理器");
@@ -794,9 +815,9 @@ impl UdpBroadcastManager {
     }
 
     /// 检查是否正在运行
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 运行状态
     pub async fn is_running(&self) -> bool {
         *self.running.lock().await
@@ -831,7 +852,7 @@ mod tests {
         // 创建临时测试目录
         let temp_dir = std::env::temp_dir().join("wdic_test");
         std::fs::create_dir_all(&temp_dir).expect("创建测试目录失败");
-        
+
         // 创建测试文件
         let test_file = temp_dir.join("test.txt");
         std::fs::write(&test_file, "测试内容").expect("创建测试文件失败");
@@ -879,7 +900,7 @@ mod tests {
     async fn test_udp_broadcast_manager_creation() {
         let local_addr = create_test_addr(0);
         let manager = UdpBroadcastManager::new(local_addr);
-        
+
         assert!(manager.is_ok());
         let manager = manager.unwrap();
         assert!(!manager.is_running().await);
@@ -892,10 +913,12 @@ mod tests {
 
         // 测试目录挂载（使用当前目录）
         let current_dir = std::env::current_dir().unwrap();
-        let mount_result = manager.mount_directory(
-            "test_mount".to_string(),
-            current_dir.to_string_lossy().to_string()
-        ).await;
+        let mount_result = manager
+            .mount_directory(
+                "test_mount".to_string(),
+                current_dir.to_string_lossy().to_string(),
+            )
+            .await;
 
         // 如果目录存在且可访问，挂载应该成功
         if mount_result.is_ok() {
@@ -905,7 +928,7 @@ mod tests {
             // 测试搜索功能
             let _results = manager.search_files(&["rs".to_string()]).await;
             // 应该能找到一些 .rs 文件
-            
+
             // 测试卸载
             let unmounted = manager.unmount_directory("test_mount").await;
             assert!(unmounted);
@@ -918,8 +941,10 @@ mod tests {
         let manager = UdpBroadcastManager::new(local_addr).expect("创建管理器失败");
 
         let sender_id = Uuid::new_v4();
-        let result = manager.send_info_message(sender_id, "测试消息".to_string()).await;
-        
+        let result = manager
+            .send_info_message(sender_id, "测试消息".to_string())
+            .await;
+
         // 即使广播失败（没有监听者），也应该返回成功
         assert!(result.is_ok());
     }
@@ -930,12 +955,10 @@ mod tests {
         let manager = UdpBroadcastManager::new(local_addr).expect("创建管理器失败");
 
         let tester_id = Uuid::new_v4();
-        let result = manager.performance_test(
-            tester_id,
-            "latency_test".to_string(),
-            1024
-        ).await;
-        
+        let result = manager
+            .performance_test(tester_id, "latency_test".to_string(), 1024)
+            .await;
+
         assert!(result.is_ok());
         let latency = result.unwrap();
         assert!(latency <= 1000); // 延迟应该在合理范围内（毫秒）

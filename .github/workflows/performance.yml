@@ -23,7 +23,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -37,7 +37,7 @@ jobs:
         cargo bench --bench performance_benchmarks > benchmark_results.txt
         cat benchmark_results.txt
     - name: Upload benchmark results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
         path: |
@@ -60,7 +60,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -79,7 +79,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -97,7 +97,7 @@ jobs:
         valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose target/debug/wdic-gateway --help > memory_report.txt 2>&1 || true
         cat memory_report.txt
     - name: Upload memory report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: memory-analysis
         path: memory_report.txt
@@ -114,7 +114,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -151,7 +151,7 @@ jobs:
         cat pr_benchmark.txt >> performance_comment.md
         echo '```' >> performance_comment.md
     - name: Upload comparison
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: performance-comparison
         path: |
@@ -167,7 +167,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -179,7 +179,7 @@ jobs:
         cargo test --test integration_tests test_performance_benchmarks --release -- --nocapture > integration_perf.txt
         cat integration_perf.txt
     - name: Upload integration performance results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: integration-performance
         path: integration_perf.txt
@@ -196,7 +196,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -209,7 +209,7 @@ jobs:
         cargo test --test integration_tests test_p2p_discovery --release -- --nocapture >> network_perf.txt
         cat network_perf.txt
     - name: Upload network performance results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: network-performance
         path: network_perf.txt
