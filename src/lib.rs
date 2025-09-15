@@ -1,22 +1,22 @@
 //! WDIC 网关库
-//! 
+//!
 //! 这是一个基于 QUIC 协议的本地网关实现，提供 P2P 网络发现和注册表管理功能。
 //! 支持自动zstd压缩/解压缩和无锁并发优化。
-//! 
+//!
 //! # 主要功能
-//! 
+//!
 //! - 基于 QUIC (quiche) 的 WDIC 网络协议实现
 //! - 本地网关注册表管理
 //! - P2P 广播和发现机制
 //! - 55555 端口服务监听
 //! - 自动zstd压缩/解压缩传输优化
 //! - 无锁并发数据结构
-//! 
+//!
 //! # 使用示例
-//! 
+//!
 //! ```no_run
 //! use wdic_gateway::Gateway;
-//! 
+//!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let gateway = Gateway::new("本地网关".to_string()).await?;
@@ -25,22 +25,29 @@
 //! }
 //! ```
 
-pub mod gateway;
-pub mod registry;
-pub mod protocol;
-pub mod network;
-pub mod udp_protocol;
-pub mod performance;
 pub mod cache;
-pub mod tls;
 pub mod compression;
+pub mod gateway;
+pub mod network;
+pub mod performance;
+pub mod protocol;
+pub mod registry;
+pub mod tls;
+pub mod udp_protocol;
 
+pub use cache::{CacheEntry, CacheMetadata, GatewayCache};
+pub use compression::{
+    CompressionConfig, CompressionFlag, CompressionManager, CompressionStats,
+    CompressionStatsSnapshot,
+};
 pub use gateway::{Gateway, GatewayConfig};
-pub use registry::{Registry, RegistryEntry};
-pub use protocol::WdicProtocol;
 pub use network::NetworkManager;
-pub use udp_protocol::{UdpBroadcastManager, UdpToken, DirectoryIndex, DirectoryEntry, UdpBroadcastEvent};
-pub use performance::{PerformanceMonitor, PerformanceReport, PerformanceTestSuite, BenchmarkResult};
-pub use cache::{GatewayCache, CacheMetadata, CacheEntry};
-pub use tls::{TlsManager, MtlsConfig, VerifyMode, TlsVersion};
-pub use compression::{CompressionManager, CompressionConfig, CompressionStats, CompressionStatsSnapshot, CompressionFlag};
+pub use performance::{
+    BenchmarkResult, PerformanceMonitor, PerformanceReport, PerformanceTestSuite,
+};
+pub use protocol::WdicProtocol;
+pub use registry::{Registry, RegistryEntry};
+pub use tls::{MtlsConfig, TlsManager, TlsVersion, VerifyMode};
+pub use udp_protocol::{
+    DirectoryEntry, DirectoryIndex, UdpBroadcastEvent, UdpBroadcastManager, UdpToken,
+};

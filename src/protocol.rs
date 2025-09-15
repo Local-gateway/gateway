@@ -1,9 +1,9 @@
 //! WDIC 协议模块
-//! 
+//!
 //! 实现基于 QUIC 的 WDIC (Web Dynamic Inter-Connection) 网络协议。
 
-use serde::{Deserialize, Serialize};
 use crate::registry::RegistryEntry;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -85,40 +85,40 @@ pub enum WdicMessage {
 
 impl WdicMessage {
     /// 创建广播消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender` - 发送者信息
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 广播消息实例
     pub fn broadcast(sender: RegistryEntry) -> Self {
         Self::Broadcast { sender }
     }
 
     /// 创建广播响应消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender` - 响应者信息
     /// * `gateways` - 已知网关列表
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 广播响应消息实例
     pub fn broadcast_response(sender: RegistryEntry, gateways: Vec<RegistryEntry>) -> Self {
         Self::BroadcastResponse { sender, gateways }
     }
 
     /// 创建心跳消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender_id` - 发送者 ID
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 心跳消息实例
     pub fn heartbeat(sender_id: Uuid) -> Self {
         Self::Heartbeat {
@@ -128,13 +128,13 @@ impl WdicMessage {
     }
 
     /// 创建心跳响应消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender_id` - 响应者 ID
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 心跳响应消息实例
     pub fn heartbeat_response(sender_id: Uuid) -> Self {
         Self::HeartbeatResponse {
@@ -144,28 +144,28 @@ impl WdicMessage {
     }
 
     /// 创建注册请求消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `gateway` - 要注册的网关信息
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 注册请求消息实例
     pub fn register_request(gateway: RegistryEntry) -> Self {
         Self::RegisterRequest { gateway }
     }
 
     /// 创建注册响应消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `success` - 是否成功
     /// * `message` - 响应消息
     /// * `gateways` - 网关列表
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 注册响应消息实例
     pub fn register_response(success: bool, message: String, gateways: Vec<RegistryEntry>) -> Self {
         Self::RegisterResponse {
@@ -176,72 +176,75 @@ impl WdicMessage {
     }
 
     /// 创建查询网关列表消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `requester_id` - 查询者 ID
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 查询消息实例
     pub fn query_gateways(requester_id: Uuid) -> Self {
         Self::QueryGateways { requester_id }
     }
 
     /// 创建查询响应消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `sender_id` - 响应者 ID
     /// * `gateways` - 网关列表
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 查询响应消息实例
     pub fn query_response(sender_id: Uuid, gateways: Vec<RegistryEntry>) -> Self {
-        Self::QueryResponse { sender_id, gateways }
+        Self::QueryResponse {
+            sender_id,
+            gateways,
+        }
     }
 
     /// 创建错误消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `code` - 错误代码
     /// * `message` - 错误描述
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 错误消息实例
     pub fn error(code: u32, message: String) -> Self {
         Self::Error { code, message }
     }
 
     /// 序列化消息为字节
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 序列化结果，成功时返回字节向量
     pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         serde_json::to_vec(self).map_err(|e| anyhow::anyhow!("序列化消息失败: {}", e))
     }
 
     /// 从字节反序列化消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `bytes` - 字节数据
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 反序列化结果，成功时返回消息实例
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         serde_json::from_slice(bytes).map_err(|e| anyhow::anyhow!("反序列化消息失败: {}", e))
     }
 
     /// 获取消息类型字符串
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 消息类型的字符串表示
     pub fn message_type(&self) -> &'static str {
         match self {
@@ -260,9 +263,9 @@ impl WdicMessage {
     }
 
     /// 获取发送者 ID（如果消息包含）
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 发送者 ID，如果消息不包含发送者信息则返回 None
     pub fn sender_id(&self) -> Option<Uuid> {
         match self {
@@ -280,7 +283,7 @@ impl WdicMessage {
 }
 
 /// WDIC 协议处理器
-/// 
+///
 /// 负责处理 WDIC 协议消息的编码、解码和路由。
 #[derive(Debug, Clone)]
 pub struct WdicProtocol {
@@ -290,9 +293,9 @@ pub struct WdicProtocol {
 
 impl WdicProtocol {
     /// 创建新的协议处理器
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 协议处理器实例
     pub fn new() -> Self {
         Self {
@@ -301,22 +304,22 @@ impl WdicProtocol {
     }
 
     /// 获取协议版本
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 协议版本字符串
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// 验证消息格式
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `message` - 要验证的消息
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 验证结果，成功时返回 ()
     pub fn validate_message(&self, message: &WdicMessage) -> anyhow::Result<()> {
         match message {
@@ -360,14 +363,14 @@ impl WdicProtocol {
     }
 
     /// 处理接收到的消息
-    /// 
+    ///
     /// # 参数
-    /// 
+    ///
     /// * `message` - 接收到的消息
     /// * `sender_addr` - 发送者地址
-    /// 
+    ///
     /// # 返回值
-    /// 
+    ///
     /// 处理结果，包含可能的响应消息
     pub fn handle_message(
         &self,
@@ -435,7 +438,10 @@ mod tests {
         let message = WdicMessage::broadcast_response(sender, gateways);
 
         match &message {
-            WdicMessage::BroadcastResponse { sender: s, gateways: g } => {
+            WdicMessage::BroadcastResponse {
+                sender: s,
+                gateways: g,
+            } => {
                 assert_eq!(s.name, "发送者");
                 assert_eq!(g.len(), 2);
                 assert_eq!(g[0].name, "网关1");
@@ -454,7 +460,10 @@ mod tests {
         let message = WdicMessage::heartbeat(id);
 
         match message {
-            WdicMessage::Heartbeat { sender_id, timestamp } => {
+            WdicMessage::Heartbeat {
+                sender_id,
+                timestamp,
+            } => {
                 assert_eq!(sender_id, id);
                 assert!(timestamp <= chrono::Utc::now());
             }

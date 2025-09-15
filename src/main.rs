@@ -2,10 +2,10 @@
 //!
 //! 基于 QUIC 的本地网关实现，提供 P2P 网络发现和注册表管理功能。
 
-use wdic_gateway::Gateway;
-use log::{info, error};
-use tokio::signal;
 use anyhow::Result;
+use log::{error, info};
+use tokio::signal;
+use wdic_gateway::Gateway;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 
     // 创建网关实例
     let gateway = Gateway::new("本地网关".to_string()).await?;
-    
+
     info!("网关创建成功，监听地址: {}", gateway.local_addr());
 
     // 设置信号处理

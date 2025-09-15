@@ -6,11 +6,11 @@
 //! - 信息广播
 //! - 性能测试
 
-use wdic_gateway::{Gateway, GatewayConfig, UdpToken};
-use std::net::SocketAddr;
 use log::info;
-use tokio::time::{Duration, sleep};
+use std::net::SocketAddr;
+use tokio::time::{sleep, Duration};
 use uuid::Uuid;
+use wdic_gateway::{Gateway, GatewayConfig, UdpToken};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,17 +33,20 @@ async fn main() -> anyhow::Result<()> {
     // 演示目录挂载功能
     info!("=== 目录挂载演示 ===");
     let current_dir = std::env::current_dir()?;
-    match gateway.mount_directory(
-        "src_code".to_string(),
-        current_dir.join("src").to_string_lossy().to_string()
-    ).await {
+    match gateway
+        .mount_directory(
+            "src_code".to_string(),
+            current_dir.join("src").to_string_lossy().to_string(),
+        )
+        .await
+    {
         Ok(()) => {
             info!("成功挂载源代码目录");
-            
+
             // 获取挂载的目录列表
             let mounted = gateway.get_mounted_directories().await;
             info!("当前挂载的目录: {:?}", mounted);
-            
+
             // 本地文件搜索演示
             let search_results = gateway.search_files_locally(&["rs".to_string()]).await;
             info!("本地搜索 'rs' 文件结果: {} 个文件", search_results.len());
@@ -58,24 +61,28 @@ async fn main() -> anyhow::Result<()> {
 
     // 演示信息广播功能
     info!("=== 信息广播演示 ===");
-    let broadcast_result = gateway.broadcast_info_message(
-        "这是一条来自 UDP 演示网关的测试消息！".to_string()
-    ).await?;
+    let broadcast_result = gateway
+        .broadcast_info_message("这是一条来自 UDP 演示网关的测试消息！".to_string())
+        .await?;
     info!("信息广播发送到 {} 个地址", broadcast_result);
 
     // 演示目录搜索广播
     info!("=== 目录搜索广播演示 ===");
-    let search_broadcast_result = gateway.broadcast_directory_search(
-        vec!["rs".to_string(), "toml".to_string()]
-    ).await?;
+    let search_broadcast_result = gateway
+        .broadcast_directory_search(vec!["rs".to_string(), "toml".to_string()])
+        .await?;
     info!("目录搜索广播发送到 {} 个地址", search_broadcast_result);
 
     // 演示性能测试功能
     info!("=== 性能测试演示 ===");
-    let latency_1k = gateway.run_performance_test("latency_test".to_string(), 1024).await?;
+    let latency_1k = gateway
+        .run_performance_test("latency_test".to_string(), 1024)
+        .await?;
     info!("1KB 数据延迟测试结果: {} 毫秒", latency_1k);
 
-    let latency_10k = gateway.run_performance_test("throughput_test".to_string(), 10240).await?;
+    let latency_10k = gateway
+        .run_performance_test("throughput_test".to_string(), 10240)
+        .await?;
     info!("10KB 数据延迟测试结果: {} 毫秒", latency_10k);
 
     // 演示定向令牌发送（发送到本地地址用于演示）
@@ -86,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
         content: "这是一个定向发送的测试令牌".to_string(),
         message_id: Uuid::new_v4(),
     };
-    
+
     match gateway.send_token_to(custom_token, target_addr).await {
         Ok(()) => info!("成功发送定向令牌到 {}", target_addr),
         Err(e) => info!("定向令牌发送失败（正常，没有监听者）: {}", e),
@@ -94,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 演示多种令牌类型的创建
     info!("=== 令牌类型演示 ===");
-    
+
     // 文件请求令牌
     let file_request = UdpToken::FileRequest {
         requester_id: Uuid::new_v4(),
@@ -125,12 +132,15 @@ async fn main() -> anyhow::Result<()> {
 
     // 显示最终统计信息
     let (registry_size, active_connections) = gateway.get_stats().await;
-    info!("最终统计 - 注册表大小: {}, 活跃连接: {}", registry_size, active_connections);
+    info!(
+        "最终统计 - 注册表大小: {}, 活跃连接: {}",
+        registry_size, active_connections
+    );
 
     info!("UDP 广播协议演示完成！");
-    
+
     // 优雅停止
     gateway.stop().await?;
-    
+
     Ok(())
 }

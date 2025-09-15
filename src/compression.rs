@@ -3,7 +3,7 @@
 //! 提供智能压缩策略，根据数据大小自动决定是否压缩，
 //! 以及多种压缩级别配置，为网络传输提供最优性能。
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -25,10 +25,10 @@ pub struct CompressionConfig {
 impl Default for CompressionConfig {
     fn default() -> Self {
         Self {
-            level: 3,               // 平衡压缩比和速度
-            min_compress_size: 128, // 小于128字节不压缩
+            level: 3,                    // 平衡压缩比和速度
+            min_compress_size: 128,      // 小于128字节不压缩
             max_chunk_size: 1024 * 1024, // 1MB分块
-            enable_dict: false,     // 暂不启用字典
+            enable_dict: false,          // 暂不启用字典
         }
     }
 }
@@ -60,13 +60,15 @@ impl CompressionStats {
     pub fn record_compression(&self, raw_size: usize, compressed_size: usize) {
         self.compress_count.fetch_add(1, Ordering::Relaxed);
         self.total_raw_bytes.fetch_add(raw_size, Ordering::Relaxed);
-        self.total_compressed_bytes.fetch_add(compressed_size, Ordering::Relaxed);
+        self.total_compressed_bytes
+            .fetch_add(compressed_size, Ordering::Relaxed);
     }
 
     /// 记录解压操作
     pub fn record_decompression(&self, compressed_size: usize, raw_size: usize) {
         self.decompress_count.fetch_add(1, Ordering::Relaxed);
-        self.total_compressed_bytes.fetch_add(compressed_size, Ordering::Relaxed);
+        self.total_compressed_bytes
+            .fetch_add(compressed_size, Ordering::Relaxed);
         self.total_raw_bytes.fetch_add(raw_size, Ordering::Relaxed);
     }
 
@@ -84,7 +86,7 @@ impl CompressionStats {
     pub fn compression_ratio(&self) -> f64 {
         let raw = self.total_raw_bytes.load(Ordering::Relaxed);
         let compressed = self.total_compressed_bytes.load(Ordering::Relaxed);
-        
+
         if raw == 0 {
             1.0
         } else {
@@ -174,7 +176,7 @@ impl CompressionManager {
     }
 
     /// 智能压缩数据
-    /// 
+    ///
     /// 根据数据大小自动决定是否压缩，并添加压缩标识头
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
         // 小于阈值的数据不压缩
@@ -216,12 +218,11 @@ impl CompressionManager {
 
     /// zstd压缩
     fn compress_zstd(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::bulk::compress(data, self.config.level)
-            .context("zstd压缩失败")
+        zstd::bulk::compress(data, self.config.level).context("zstd压缩失败")
     }
 
     /// 解压数据
-    /// 
+    ///
     /// 根据压缩标识头自动选择解压方法
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() {
@@ -240,7 +241,8 @@ impl CompressionManager {
                 // zstd压缩数据，需要解压
                 match self.decompress_zstd(payload) {
                     Ok(decompressed) => {
-                        self.stats.record_decompression(payload.len(), decompressed.len());
+                        self.stats
+                            .record_decompression(payload.len(), decompressed.len());
                         Ok(decompressed)
                     }
                     Err(e) => {
@@ -254,8 +256,7 @@ impl CompressionManager {
 
     /// zstd解压
     fn decompress_zstd(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::bulk::decompress(data, self.config.max_chunk_size)
-            .context("zstd解压失败")
+        zstd::bulk::decompress(data, self.config.max_chunk_size).context("zstd解压失败")
     }
 
     /// 分块压缩大数据
@@ -286,7 +287,9 @@ impl CompressionManager {
         self.stats.compress_count.store(0, Ordering::Relaxed);
         self.stats.decompress_count.store(0, Ordering::Relaxed);
         self.stats.total_raw_bytes.store(0, Ordering::Relaxed);
-        self.stats.total_compressed_bytes.store(0, Ordering::Relaxed);
+        self.stats
+            .total_compressed_bytes
+            .store(0, Ordering::Relaxed);
         self.stats.compress_errors.store(0, Ordering::Relaxed);
         self.stats.decompress_errors.store(0, Ordering::Relaxed);
     }
@@ -325,7 +328,7 @@ mod tests {
     fn test_compression_manager_creation() {
         let manager = CompressionManager::default();
         assert_eq!(manager.config().level, 3);
-        
+
         let custom_config = CompressionConfig {
             level: 5,
             min_compress_size: 256,
@@ -341,11 +344,11 @@ mod tests {
     fn test_small_data_no_compression() {
         let manager = CompressionManager::default();
         let small_data = b"hello"; // 5字节，小于默认阈值128
-        
+
         let compressed = manager.compress(small_data).unwrap();
         assert_eq!(compressed[0], u8::from(CompressionFlag::None));
         assert_eq!(&compressed[1..], small_data);
-        
+
         let decompressed = manager.decompress(&compressed).unwrap();
         assert_eq!(decompressed, small_data);
     }
@@ -354,11 +357,11 @@ mod tests {
     fn test_large_data_compression() {
         let manager = CompressionManager::default();
         let large_data = "a".repeat(500).into_bytes(); // 500字节，大于阈值
-        
+
         let compressed = manager.compress(&large_data).unwrap();
         assert_eq!(compressed[0], u8::from(CompressionFlag::Zstd));
         assert!(compressed.len() < large_data.len() + 1); // 应该有压缩效果
-        
+
         let decompressed = manager.decompress(&compressed).unwrap();
         assert_eq!(decompressed, large_data);
     }
@@ -368,7 +371,7 @@ mod tests {
         let manager = CompressionManager::default();
         // 随机数据通常压缩效果不好
         let random_data: Vec<u8> = (0..200).map(|i| (i * 17 + 7) as u8).collect();
-        
+
         let compressed = manager.compress(&random_data).unwrap();
         let decompressed = manager.decompress(&compressed).unwrap();
         assert_eq!(decompressed, random_data);
@@ -378,7 +381,7 @@ mod tests {
     fn test_empty_data() {
         let manager = CompressionManager::default();
         let empty_data = b"";
-        
+
         let compressed = manager.compress(empty_data).unwrap();
         let decompressed = manager.decompress(&compressed).unwrap();
         assert_eq!(decompressed, empty_data);
@@ -388,13 +391,13 @@ mod tests {
     fn test_compression_stats() {
         let manager = CompressionManager::default();
         let data = "x".repeat(300).into_bytes(); // 确保会被压缩
-        
+
         let stats_before = manager.stats().snapshot();
         assert_eq!(stats_before.compress_count, 0);
-        
+
         let compressed = manager.compress(&data).unwrap();
         manager.decompress(&compressed).unwrap();
-        
+
         let stats_after = manager.stats().snapshot();
         assert_eq!(stats_after.compress_count, 1);
         assert_eq!(stats_after.decompress_count, 1);
@@ -407,12 +410,12 @@ mod tests {
             max_chunk_size: 100, // 小的分块大小用于测试
             ..CompressionConfig::default()
         });
-        
+
         let large_data = "x".repeat(250).into_bytes(); // 超过分块大小
-        
+
         let chunks = manager.compress_chunks(&large_data).unwrap();
         assert!(chunks.len() > 1); // 应该被分成多块
-        
+
         let decompressed = manager.decompress_chunks(&chunks).unwrap();
         assert_eq!(decompressed, large_data);
     }
@@ -421,10 +424,10 @@ mod tests {
     fn test_stats_reset() {
         let manager = CompressionManager::default();
         let data = "x".repeat(300).into_bytes();
-        
+
         manager.compress(&data).unwrap();
         assert!(manager.stats().snapshot().compress_count > 0);
-        
+
         manager.reset_stats();
         let stats = manager.stats().snapshot();
         assert_eq!(stats.compress_count, 0);
@@ -435,7 +438,7 @@ mod tests {
     fn test_config_update() {
         let mut manager = CompressionManager::default();
         assert_eq!(manager.config().level, 3);
-        
+
         let new_config = CompressionConfig {
             level: 6,
             ..CompressionConfig::default()
