@@ -123,8 +123,8 @@ impl CacheMetadata {
         
         // 剩余空间用随机字符填充
         let mut rng = rand::rng();
-        for i in json_bytes.len()..Self::METADATA_SIZE - 2 {
-            bytes[i] = rng.random::<u8>() % 94 + 33; // 可打印ASCII字符
+        for byte in bytes.iter_mut().take(Self::METADATA_SIZE - 2).skip(json_bytes.len()) {
+            *byte = rng.random::<u8>() % 94 + 33; // 可打印ASCII字符
         }
         
         // 最后两个字节存储JSON数据的实际长度（小端序）

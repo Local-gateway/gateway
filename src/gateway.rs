@@ -7,7 +7,7 @@
 use std::net::{SocketAddr, Ipv6Addr};
 use std::sync::Arc;
 use std::path::PathBuf;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio::time::{Duration, interval, sleep};
 use anyhow::Result;
 use log::{info, warn, error, debug};
@@ -19,6 +19,7 @@ use crate::udp_protocol::{UdpBroadcastManager, UdpBroadcastEvent, UdpToken};
 use crate::performance::{PerformanceMonitor, PerformanceTestSuite, BenchmarkResult};
 use crate::cache::{GatewayCache, CacheMetadata};
 use crate::tls::{TlsManager, MtlsConfig};
+use crate::compression::{CompressionManager, CompressionConfig};
 
 /// 网关配置
 #[derive(Debug, Clone)]
@@ -78,11 +79,12 @@ impl Default for GatewayConfig {
 /// 
 /// 网关的主要实现，负责协调各个模块的工作。
 /// 增强版本支持缓存系统、TLS 1.3 mTLS、zstd 压缩和 IPv6/IPv4 双栈。
+/// 优化版本：使用lock-free并发和自动压缩。
 pub struct Gateway {
     /// 网关配置
     config: GatewayConfig,
-    /// 网关注册表
-    registry: Arc<RwLock<Registry>>,
+    /// 网关注册表 (lock-free)
+    registry: Arc<Registry>,
     /// 网络管理器（QUIC 协议）
     network_manager: Arc<NetworkManager>,
     /// UDP 广播管理器
@@ -93,6 +95,8 @@ pub struct Gateway {
     cache: Arc<Mutex<GatewayCache>>,
     /// TLS 管理器
     tls_manager: Arc<TlsManager>,
+    /// 压缩管理器
+    compression_manager: Arc<CompressionManager>,
     /// 运行状态
     running: Arc<Mutex<bool>>,
 }
@@ -154,11 +158,11 @@ impl Gateway {
         };
         let udp_broadcast_manager = Arc::new(UdpBroadcastManager::new(udp_addr)?);
         
-        // 创建注册表
-        let registry = Arc::new(RwLock::new(Registry::new(
+        // 创建注册表 (lock-free)
+        let registry = Arc::new(Registry::new(
             config.name.clone(),
             actual_addr,
-        )));
+        ));
 
         // 创建性能监控器
         let performance_monitor = Arc::new(PerformanceMonitor::new());
@@ -172,6 +176,15 @@ impl Gateway {
 
         // 创建 TLS 管理器
         let tls_manager = Arc::new(TlsManager::new(config.tls_config.clone())?);
+
+        // 创建压缩管理器
+        let compression_config = CompressionConfig {
+            level: if config.enable_compression { 3 } else { 0 },
+            min_compress_size: 128,
+            max_chunk_size: 1024 * 1024,
+            enable_dict: false,
+        };
+        let compression_manager = Arc::new(CompressionManager::new(compression_config));
 
         info!("网关 '{}' 在地址 {} 创建（QUIC），UDP 广播在 {}", 
               config.name, actual_addr, udp_broadcast_manager.local_addr());
@@ -198,6 +211,7 @@ impl Gateway {
             performance_monitor,
             cache,
             tls_manager,
+            compression_manager,
             running: Arc::new(Mutex::new(false)),
         })
     }
@@ -223,7 +237,7 @@ impl Gateway {
     /// 
     /// 当前注册表中的所有条目
     pub async fn get_registry_snapshot(&self) -> Vec<RegistryEntry> {
-        self.registry.read().await.all_entries()
+        self.registry.all_entries()
     }
 
     /// 获取本网关信息
@@ -232,7 +246,7 @@ impl Gateway {
     /// 
     /// 本网关的注册表条目
     pub async fn get_local_entry(&self) -> RegistryEntry {
-        self.registry.read().await.local_entry().clone()
+        self.registry.local_entry()
     }
 
     /// 启动网关
@@ -511,22 +525,16 @@ impl Gateway {
     async fn handle_broadcast_message(&self, sender_entry: RegistryEntry, sender_addr: SocketAddr) -> Result<()> {
         info!("收到来自 '{}' ({}) 的广播", sender_entry.name, sender_addr);
 
-        // 添加到注册表
-        {
-            let mut registry = self.registry.write().await;
-            let is_new = registry.add_or_update(sender_entry.clone());
-            if is_new {
-                info!("新网关 '{}' 加入网络", sender_entry.name);
-            } else {
-                debug!("更新现有网关 '{}' 信息", sender_entry.name);
-            }
+        // 添加到注册表 (lock-free)
+        let is_new = self.registry.add_or_update(sender_entry.clone());
+        if is_new {
+            info!("新网关 '{}' 加入网络", sender_entry.name);
+        } else {
+            debug!("更新现有网关 '{}' 信息", sender_entry.name);
         }
 
         // 响应广播，返回除发送者外的其他网关信息
-        let response_gateways = {
-            let registry = self.registry.read().await;
-            registry.entries_except(&sender_entry.id)
-        };
+        let response_gateways = self.registry.entries_except(&sender_entry.id);
 
         let local_entry = self.get_local_entry().await;
         let response = WdicMessage::broadcast_response(local_entry, response_gateways);
@@ -541,14 +549,12 @@ impl Gateway {
     async fn handle_broadcast_response(&self, sender_entry: RegistryEntry, gateways: Vec<RegistryEntry>) -> Result<()> {
         info!("收到来自 '{}' 的广播响应，包含 {} 个网关", sender_entry.name, gateways.len());
 
-        let mut registry = self.registry.write().await;
-        
-        // 添加响应者
-        registry.add_or_update(sender_entry);
+        // 添加响应者 (lock-free)
+        self.registry.add_or_update(sender_entry);
 
         // 添加响应中包含的其他网关
         for gateway in gateways {
-            let is_new = registry.add_or_update(gateway.clone());
+            let is_new = self.registry.add_or_update(gateway.clone());
             if is_new {
                 info!("发现新网关: '{}'", gateway.name);
             }
@@ -561,14 +567,11 @@ impl Gateway {
     async fn handle_heartbeat(&self, sender_id: uuid::Uuid, sender_addr: SocketAddr) -> Result<()> {
         debug!("收到来自 {} 的心跳", sender_addr);
 
-        // 更新注册表中的条目
-        {
-            let mut registry = self.registry.write().await;
-            if let Some(entry) = registry.get(&sender_id) {
-                let mut updated_entry = entry.clone();
-                updated_entry.update_last_seen();
-                registry.add_or_update(updated_entry);
-            }
+        // 更新注册表中的条目 (lock-free)
+        if let Some(entry) = self.registry.get(&sender_id) {
+            let mut updated_entry = entry;
+            updated_entry.update_last_seen();
+            self.registry.add_or_update(updated_entry);
         }
 
         // 回复心跳响应
@@ -583,8 +586,7 @@ impl Gateway {
     async fn handle_register_request(&self, gateway: RegistryEntry, sender_addr: SocketAddr) -> Result<()> {
         info!("收到来自 '{}' 的注册请求", gateway.name);
 
-        let mut registry = self.registry.write().await;
-        let is_new = registry.add_or_update(gateway.clone());
+        let is_new = self.registry.add_or_update(gateway.clone());
         
         let (success, message) = if is_new {
             (true, format!("网关 '{}' 注册成功", gateway.name))
@@ -592,7 +594,7 @@ impl Gateway {
             (true, format!("网关 '{}' 信息已更新", gateway.name))
         };
 
-        let response_gateways = registry.entries_except(&gateway.id);
+        let response_gateways = self.registry.entries_except(&gateway.id);
         let response = WdicMessage::register_response(success, message, response_gateways);
 
         self.network_manager.reply_message(&response, sender_addr).await?;
@@ -603,10 +605,7 @@ impl Gateway {
     async fn handle_query_gateways(&self, requester_id: uuid::Uuid, sender_addr: SocketAddr) -> Result<()> {
         debug!("收到网关查询请求");
 
-        let gateways = {
-            let registry = self.registry.read().await;
-            registry.entries_except(&requester_id)
-        };
+        let gateways = self.registry.entries_except(&requester_id);
 
         let local_entry = self.get_local_entry().await;
         let response = WdicMessage::query_response(local_entry.id, gateways);
@@ -617,10 +616,9 @@ impl Gateway {
 
     /// 清理连接相关的注册表条目
     async fn cleanup_connection_entry(&self, addr: SocketAddr) -> Result<()> {
-        let mut registry = self.registry.write().await;
-        if let Some(entry) = registry.get_by_address(&addr) {
+        if let Some(entry) = self.registry.get_by_address(&addr) {
             let gateway_id = entry.id;
-            registry.remove(&gateway_id);
+            self.registry.remove(&gateway_id);
             info!("清理断开连接的网关: {}", addr);
         }
         Ok(())
@@ -630,7 +628,7 @@ impl Gateway {
     /// 
     /// 定期向网络广播自己的存在，并在心跳时广播缓存名称哈希列表。
     async fn broadcast_task(
-        registry: Arc<RwLock<Registry>>,
+        registry: Arc<Registry>,
         network_manager: Arc<NetworkManager>,
         udp_broadcast_manager: Arc<UdpBroadcastManager>,
         cache: Arc<Mutex<GatewayCache>>,
@@ -642,7 +640,7 @@ impl Gateway {
         while *running.lock().await {
             broadcast_interval.tick().await;
 
-            let local_entry = registry.read().await.local_entry().clone();
+            let local_entry = registry.local_entry();
             let broadcast_message = WdicMessage::broadcast(local_entry.clone());
 
             // QUIC 协议广播
@@ -699,7 +697,7 @@ impl Gateway {
     /// 
     /// 定期清理过期的注册表条目。
     async fn registry_cleanup_task(
-        registry: Arc<RwLock<Registry>>,
+        registry: Arc<Registry>,
         config: GatewayConfig,
         running: Arc<Mutex<bool>>,
     ) {
@@ -708,10 +706,7 @@ impl Gateway {
         while *running.lock().await {
             cleanup_interval.tick().await;
 
-            let cleaned_count = {
-                let mut reg = registry.write().await;
-                reg.cleanup_expired(config.connection_timeout)
-            };
+            let cleaned_count = registry.cleanup_expired(config.connection_timeout);
 
             if cleaned_count > 0 {
                 info!("清理了 {} 个过期的注册表条目", cleaned_count);
@@ -928,7 +923,7 @@ impl Gateway {
     /// 
     /// 包含注册表大小和活跃连接数的统计信息
     pub async fn get_stats(&self) -> (usize, usize) {
-        let registry_size = self.registry.read().await.size();
+        let registry_size = self.registry.size();
         let active_connections = self.network_manager.active_connections_count().await;
         (registry_size, active_connections)
     }
@@ -940,6 +935,15 @@ impl Gateway {
     /// 性能监控器实例
     pub fn performance_monitor(&self) -> Arc<PerformanceMonitor> {
         Arc::clone(&self.performance_monitor)
+    }
+
+    /// 获取压缩管理器
+    /// 
+    /// # 返回值
+    /// 
+    /// 压缩管理器实例
+    pub fn compression_manager(&self) -> Arc<CompressionManager> {
+        Arc::clone(&self.compression_manager)
     }
 
     /// 缓存文件到网关缓存系统
@@ -1246,24 +1250,17 @@ impl Gateway {
                 std::net::SocketAddr::from(([192, 168, 1, (i % 255) as u8], 55555 + (i % 1000) as u16)),
             );
             
-            // 添加条目
-            {
-                let mut registry = self.registry.write().await;
-                registry.add_or_update(entry.clone());
-            }
+            // 添加条目 (lock-free)
+            self.registry.add_or_update(entry.clone());
             operations += 1;
             
-            // 查询条目
-            {
-                let registry = self.registry.read().await;
-                let _ = registry.get_by_address(&entry.address);
-            }
+            // 查询条目 (lock-free)
+            let _ = self.registry.get_by_address(&entry.address);
             operations += 1;
             
             // 每1000次操作清理一次过期条目
             if i % 1000 == 0 {
-                let mut registry = self.registry.write().await;
-                registry.cleanup_expired(300);
+                self.registry.cleanup_expired(300);
                 operations += 1;
             }
         }
@@ -1383,10 +1380,7 @@ impl Gateway {
                         std::net::SocketAddr::from(([172, 16, (task_id % 255) as u8, (i % 255) as u8], 55555 + i as u16)),
                     );
                     
-                    {
-                        let mut reg = registry.write().await;
-                        reg.add_or_update(entry);
-                    }
+                    registry.add_or_update(entry);
                     
                     // 模拟一些处理时间
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
