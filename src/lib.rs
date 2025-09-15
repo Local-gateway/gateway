@@ -51,3 +51,30 @@ pub use tls::{MtlsConfig, TlsManager, TlsVersion, VerifyMode};
 pub use udp_protocol::{
     DirectoryEntry, DirectoryIndex, UdpBroadcastEvent, UdpBroadcastManager, UdpToken,
 };
+
+// Add integration test to verify BoringSSL works properly
+#[cfg(test)]
+mod boringssl_integration {
+    #[test]
+    fn test_quiche_boringssl_integration() {
+        // Test that quiche can be initialized (which requires BoringSSL)
+        let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+        
+        // Set some basic configuration to verify the library works
+        config.set_application_protos(&[b"test"]).unwrap();
+        config.set_max_idle_timeout(5000);
+        config.set_max_recv_udp_payload_size(1350);
+        config.set_max_send_udp_payload_size(1350);
+        config.set_initial_max_data(10_000_000);
+        config.set_initial_max_stream_data_bidi_local(1_000_000);
+        config.set_initial_max_stream_data_bidi_remote(1_000_000);
+        config.set_initial_max_streams_bidi(100);
+        config.set_initial_max_streams_uni(100);
+        config.set_disable_active_migration(true);
+        
+        // This would fail if BoringSSL wasn't properly linked
+        println!("✅ quiche configuration created successfully!");
+        println!("✅ BoringSSL integration is working correctly!");
+        println!("✅ QUIC protocol version: {}", quiche::PROTOCOL_VERSION);
+    }
+}
