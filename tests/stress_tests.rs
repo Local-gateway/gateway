@@ -315,7 +315,7 @@ async fn test_memory_stress() -> Result<()> {
 
     // 首先更新系统指标确保获取到正确的内存信息
     monitor.update_system_metrics().await?;
-    
+
     // 记录开始时的内存使用
     let initial_memory = monitor.get_memory_metrics().await;
     println!(
@@ -370,11 +370,13 @@ async fn test_memory_stress() -> Result<()> {
     // 但是为了避免在测试环境中的不确定性，我们只检查基本的内存指标是否合理
     assert!(
         peak_memory.current_usage > 0,
-        "峰值内存使用应该大于0: {} bytes", peak_memory.current_usage
+        "峰值内存使用应该大于0: {} bytes",
+        peak_memory.current_usage
     );
     assert!(
         initial_memory.current_usage > 0,
-        "初始内存使用应该大于0: {} bytes", initial_memory.current_usage
+        "初始内存使用应该大于0: {} bytes",
+        initial_memory.current_usage
     );
 
     Ok(())
